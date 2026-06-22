@@ -18,6 +18,13 @@
     --accent:#ff6b5e; --now:#ff5a52; --normal:#e8c84d; --any:#5ac87a;
     --blue:#6fb0e6; --orange:#f0a84d; --green:#5ac87a;
   }
+  html[data-theme="light"]{
+    --bg:#ffffff; --bg2:#f4f1fb; --panel:#efeaf9; --panel2:#e4ddf3;
+    --text:#1c1530; --sub:#5b5482; --dim:#8b83b0; --line:#1a132220;
+    --accent:#e0483c; --now:#e23b33; --normal:#b08a1e; --any:#2f9e54;
+    --blue:#3f7fc0; --orange:#c77a2a; --green:#2f9e54;
+  }
+  html[data-theme="light"] .ck.done::after{ color:#ffffff; }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   html,body{margin:0; padding:0; background:var(--bg2); color:var(--text);
     font-family:-apple-system,"Hiragino Kaku Gothic ProN","Yu Gothic UI",Meiryo,"Segoe UI",sans-serif;
@@ -29,6 +36,7 @@
   button{font-family:inherit; cursor:pointer; border:none; border-radius:10px; color:var(--text);}
   .icon{background:transparent; color:var(--sub); font-size:18px; padding:6px 9px; border-radius:9px;}
   .icon:active{background:var(--panel);}
+  .icon.on{color:var(--accent); background:var(--panel);}
   .row{display:flex; gap:8px; align-items:flex-start;}
   textarea,input[type=text]{width:100%; background:var(--panel); border:1px solid var(--line); border-radius:12px;
     color:var(--text); font-size:16px; padding:11px 12px; resize:none; outline:none;}
@@ -43,14 +51,16 @@
   .tab.now.on{background:var(--now);} .tab.any.on{background:var(--any);}
   .search{margin:8px 0 2px;}
   .qstat{color:var(--sub); font-size:12px; margin:8px 2px 2px;}
-  .list{margin-top:8px; display:flex; flex-direction:column; gap:2px;}
-  .task{display:flex; align-items:flex-start; gap:9px; padding:11px 8px; border-radius:12px;}
+  .list{margin-top:8px; display:flex; flex-direction:column; gap:2px; overflow-x:hidden;}
+  .task{display:flex; align-items:flex-start; gap:9px; padding:11px 8px; border-radius:12px; touch-action:pan-y; will-change:transform;}
   .task:active{background:#ffffff10;}
+  .task.dragging{opacity:.65; background:var(--panel2); box-shadow:0 6px 18px #0007; position:relative; z-index:3;}
   .ck{width:26px; height:26px; flex:none; border-radius:8px; border:2px solid var(--dim); background:transparent; margin-top:1px; position:relative;}
   .ck::before{content:""; position:absolute; inset:-9px;}  /* タップ判定を広げる（指でも押しやすく） */
   .ck.done{background:var(--green); border-color:var(--green);}
   .ck.done::after{content:"✓"; color:#11210f; position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:16px; font-weight:800;}
   .dot{width:11px; flex:none; align-self:center; color:var(--normal); font-size:13px; margin-top:2px;}
+  .dot.handle{cursor:grab; touch-action:none;}
   .body{flex:1; min-width:0;}
   .ttext{font-size:15.5px; line-height:1.35; word-break:break-word;}
   .task.is-done .ttext{text-decoration:line-through; color:#8a82b0;}
@@ -61,6 +71,18 @@
   .b.pri-high{background:#ff5a5224; color:#ff8a82;} .b.pri-mid{background:#f0a84d22; color:#f4c178;} .b.pri-low{background:#6fb0e622; color:#9ccdf2;}
   .b.tag{background:#7a6fb033; color:#cbb8ff;}
   .b.note{background:transparent; color:var(--dim); padding-left:0;}
+  /* ライトテーマ：バッジは暗い文字＋濃いめ背景でコントラストを確保 */
+  html[data-theme="light"] .b{background:#1a132212; color:#4a4470;}
+  html[data-theme="light"] .b.due-over{background:#e23b3322; color:#b32c22;}
+  html[data-theme="light"] .b.due-today{background:#c77a2a26; color:#8f5512;}
+  html[data-theme="light"] .b.due-tom{background:#b08a1e26; color:#735a0e;}
+  html[data-theme="light"] .b.pri-high{background:#e23b3320; color:#b32c22;}
+  html[data-theme="light"] .b.pri-mid{background:#c77a2a22; color:#8f5512;}
+  html[data-theme="light"] .b.pri-low{background:#3f7fc022; color:#2a5c93;}
+  html[data-theme="light"] .b.tag{background:#7a6fb02e; color:#4b3f8f;}
+  html[data-theme="light"] .b.note{color:#5b5482;}
+  html[data-theme="light"] .task.is-done .ttext{color:#9a93b8;}
+  html[data-theme="light"] .task:active{background:#1a132208;}
   .rowright{flex:none; align-self:center; color:var(--dim); font-size:20px; padding:2px 4px;}
   .empty{color:var(--dim); font-size:13px; padding:18px 6px; text-align:center;}
   .memo-wrap{margin-top:18px;}
@@ -89,6 +111,7 @@
     background:#2a1d4ef0; border:2px solid var(--orange); color:#fff1d0; font-weight:700; font-size:14px;
     padding:11px 18px; border-radius:14px; z-index:90; opacity:0; transition:opacity .25s; pointer-events:none; box-shadow:0 8px 30px #0008;}
   .toast.show{opacity:1;}
+  .toast.tappable{pointer-events:auto; cursor:pointer; border-color:var(--green);}
   select{font-family:inherit; font-size:14px; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:10px; padding:8px;}
   #cloudBox{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:12px;}
   #cloudBox .st{font-size:12.5px; color:var(--sub); margin-bottom:8px;}
@@ -101,6 +124,8 @@
 <body>
 <div class="wrap">
   <h1>📌 やること<span class="sub" id="ver" style="font-size:11px;color:var(--dim);font-weight:400"></span><span class="sp"></span>
+    <button class="icon" id="btnSort" title="並び順">↕</button>
+    <button class="icon" id="btnTheme" title="テーマ">🌙</button>
     <button class="icon" id="btnHelp" title="ヘルプ">？</button>
     <button class="icon" id="btnData" title="データ">⇅</button>
   </h1>
@@ -199,7 +224,7 @@ function subDone(t){ return (t.subs||[]).filter(s=>s.done).length; }
 
 // ---- state ----
 let state = { tasks:[], completions:{}, memo:"", hideDone:false };
-let filter = "all", search = "", editIndex = -1;
+let filter = "all", search = "", editIndex = -1, sort = "manual";
 
 // ---- date utils ----
 function pad(n){ return (n<10?"0":"")+n; }
@@ -330,15 +355,32 @@ function renderQStat(){
   el("qstat").textContent=s;
 }
 function renderStat(){ el("stat").textContent="今日の完了 ✓"+todayCount()+"  🔥 連続 "+streak()+" 日"; }
+const PRIO_RANK={"":0,low:1,mid:2,high:3};
+function sortCompare(a,b){
+  if(sort==="due"){
+    const da=parseDate(a.due), db=parseDate(b.due);
+    return (da?da.getTime():Infinity)-(db?db.getTime():Infinity);   // 締切が近い順・なしは最後
+  }
+  if(sort==="priority"){ return (PRIO_RANK[b.priority]||0)-(PRIO_RANK[a.priority]||0); } // 高い順
+  if(sort==="estimate"){
+    const ea=parseInt(a.estimate,10)||0, eb=parseInt(b.estimate,10)||0;
+    if(ea===0&&eb===0) return 0; if(ea===0) return 1; if(eb===0) return -1; return eb-ea; // 大きい順・0は最後
+  }
+  return 0;
+}
 function renderList(){
   const list=el("list"); list.innerHTML=""; let any=false;
-  state.tasks.forEach((t,i)=>{
-    if(!matchFilter(t)) return; any=true;
+  const vis=[]; state.tasks.forEach((t,i)=>{ if(matchFilter(t)) vis.push({t,i}); });
+  if(sort!=="manual"){ vis.sort((x,y)=>{ const c=sortCompare(x.t,y.t); return c!==0? c : (x.i-y.i); }); }
+  vis.forEach(o=>{
+    const t=o.t, i=o.i; any=true;
     const row=document.createElement("div"); row.className="task"+(t.done?" is-done":"");
+    row.dataset.idx=i;
     const ck=document.createElement("button"); ck.className="ck"+(t.done?" done":"");
     ck.onclick=(e)=>{ e.stopPropagation(); toggleDone(i); };
-    const dot=document.createElement("div"); dot.className="dot"; dot.textContent="●";
+    const dot=document.createElement("div"); dot.className="dot"+(sort==="manual"?" handle":""); dot.textContent="●";
     dot.style.color = t.done? "#554f77" : catInfo(t.cat).color;
+    if(sort==="manual") dot.title="ドラッグで並べ替え";
     const body=document.createElement("div"); body.className="body";
     const tt=document.createElement("div"); tt.className="ttext"; tt.textContent=t.text; body.appendChild(tt);
     const badges=document.createElement("div"); badges.className="badges";
@@ -353,11 +395,101 @@ function renderList(){
     if(badges.children.length) body.appendChild(badges);
     const right=document.createElement("div"); right.className="rowright"; right.textContent="›";
     row.appendChild(ck); row.appendChild(dot); row.appendChild(body); row.appendChild(right);
-    row.onclick=()=>openEdit(i);
+    row.onclick=(e)=>{ if(Date.now() < suppressClickUntil){ e.preventDefault(); e.stopPropagation(); return; } openEdit(i); };
+    attachRowGestures(row, i);
     list.appendChild(row);
   });
   if(!any){ const e=document.createElement("div"); e.className="empty";
     e.textContent= state.tasks.length? "この条件のタスクはありません":"タスクはありません。上の欄に書いて ＋ で追加"; list.appendChild(e); }
+}
+// ---- 行ジェスチャー：スワイプで完了/削除・ドラッグで並べ替え（タッチ＆マウス対応） ----
+let dragging=false;          // ドラッグ中はクラウド反映・並び替えを止める
+let suppressClickUntil=0;    // ジェスチャー直後の合成clickを抑止（時間で自動失効＝フラグが残らない）
+function attachRowGestures(row, i){
+  row.addEventListener("pointerdown", function(e){
+    if(e.pointerType==="mouse" && e.button!==0) return;
+    const onDot=e.target.closest(".dot");
+    const onInteractive=e.target.closest(".ck, .b, .rowright");
+    if(onInteractive && !onDot) return;          // チェックボックス・タグ等は通常タップに任せる
+    if(onDot && sort==="manual"){ startDrag(e, row); }
+    else { startSwipe(e, i, row); }
+  });
+}
+function startSwipe(e, i, row){
+  const pid=e.pointerId, startX=e.clientX, startY=e.clientY;
+  const task=state.tasks[i];                     // 並び替え・同期で添字がずれても同一タスクを操作するため実体を保持
+  let dx=0, decided=false, active=false;
+  function onMove(ev){
+    dx=ev.clientX-startX; const dy=ev.clientY-startY;
+    if(!decided){
+      if(Math.abs(dx)<8 && Math.abs(dy)<8) return;
+      decided=true; active=Math.abs(dx) > Math.abs(dy)*1.3;
+      if(active){ try{ row.setPointerCapture(pid); }catch(_){} }
+    }
+    if(active){
+      if(ev.cancelable) ev.preventDefault();
+      row.style.transition="none"; row.style.transform="translateX("+dx+"px)";
+      row.style.background = dx>0? "rgba(90,200,122,.20)" : (dx<0? "rgba(255,90,82,.20)":"");
+    }
+  }
+  function onUp(){
+    row.removeEventListener("pointermove",onMove); row.removeEventListener("pointerup",onUp); row.removeEventListener("pointercancel",onUp);
+    try{ row.releasePointerCapture(pid); }catch(_){}
+    if(active) suppressClickUntil=Date.now()+400;
+    const TH=80;
+    const cur=()=>state.tasks.indexOf(task);     // 発火時点の現在の添字を解決
+    if(active && dx>TH){ row.style.transition="transform .15s ease"; row.style.transform="translateX(115%)"; setTimeout(()=>{ const j=cur(); if(j>=0) toggleDone(j); },130); return; }
+    if(active && dx<-TH){ row.style.transition="transform .15s ease"; row.style.transform="translateX(-115%)"; setTimeout(()=>{ const j=cur(); if(j>=0) deleteTaskUndoable(j); },130); return; }
+    row.style.transition="transform .15s ease, background .15s ease"; row.style.transform=""; row.style.background="";
+  }
+  row.addEventListener("pointermove",onMove); row.addEventListener("pointerup",onUp); row.addEventListener("pointercancel",onUp);
+}
+function startDrag(e, row){
+  const pid=e.pointerId; const list=el("list"); let moved=false;
+  try{ row.setPointerCapture(pid); }catch(_){}
+  dragging=true; row.classList.add("dragging");
+  function onMove(ev){
+    if(ev.cancelable) ev.preventDefault();
+    moved=true; suppressClickUntil=Date.now()+400;
+    row.style.pointerEvents="none";
+    const under=document.elementFromPoint(ev.clientX, ev.clientY);
+    row.style.pointerEvents="";
+    const target=under && under.closest(".task");
+    if(target && target!==row && target.parentNode===list){
+      const rect=target.getBoundingClientRect();
+      if(ev.clientY < rect.top+rect.height/2) list.insertBefore(row, target);
+      else list.insertBefore(row, target.nextSibling);
+    }
+  }
+  function onUp(){
+    row.removeEventListener("pointermove",onMove); row.removeEventListener("pointerup",onUp); row.removeEventListener("pointercancel",onUp);
+    try{ row.releasePointerCapture(pid); }catch(_){}
+    dragging=false; row.classList.remove("dragging");
+    if(moved){ suppressClickUntil=Date.now()+400; commitDragOrder(); }
+  }
+  row.addEventListener("pointermove",onMove); row.addEventListener("pointerup",onUp); row.addEventListener("pointercancel",onUp);
+}
+function commitDragOrder(){
+  // DOMの新しい並び順を、表示対象タスクが占めていた元の位置へ詰め直す（非表示タスクは不動）
+  const rows=Array.prototype.slice.call(el("list").querySelectorAll(".task"));
+  const newOrder=rows.map(r=>parseInt(r.dataset.idx,10)).filter(n=>!isNaN(n) && n>=0 && n<state.tasks.length);
+  if(newOrder.length !== rows.length){ render(); return; }   // ドラッグ中に件数が変化→中断して再描画
+  const positions=newOrder.slice().sort((a,b)=>a-b);
+  const tasksInOrder=newOrder.map(idx=>state.tasks[idx]);
+  positions.forEach((pos,k)=>{ state.tasks[pos]=tasksInOrder[k]; });
+  save(); render();
+}
+let pendingUndo=null;
+function deleteTaskUndoable(i){
+  const t=state.tasks[i]; if(!t) return;
+  const deleted={ task:t, index:i };             // 各削除を個別に捕捉（連続削除でも取り違えない）
+  pendingUndo=deleted;
+  state.tasks.splice(i,1); save(); render();
+  toast("🗑 削除しました（タップで取り消し）", function(){
+    if(pendingUndo!==deleted) return;            // クラウド更新等で無効化済みなら何もしない
+    const at=Math.min(deleted.index, state.tasks.length);
+    state.tasks.splice(at,0,deleted.task); pendingUndo=null; save(); render();
+  });
 }
 function mkBadge(text,cls){ const b=document.createElement("span"); b.className=cls; b.textContent=text; return b; }
 function toggleDone(i){ const t=state.tasks[i]; if(!t) return;
@@ -460,8 +592,13 @@ function escapeHtml(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<"
 
 // ---- toast ----
 let toastTimer=null;
-function toast(msg){ const t=el("toast"); t.textContent=msg; t.classList.add("show");
-  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove("show"),2200); }
+function toast(msg, undoFn){
+  const t=el("toast"); t.textContent=msg; t.classList.add("show");
+  t.classList.toggle("tappable", !!undoFn);
+  t.onclick = undoFn ? function(){ try{ undoFn(); }catch(e){} t.classList.remove("show"); t.classList.remove("tappable"); t.onclick=null; } : null;
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(function(){ t.classList.remove("show"); t.classList.remove("tappable"); t.onclick=null; }, undoFn?4500:2200);
+}
 
 // ---- CSV ----
 function csvEscape(v){ v=String(v==null?"":v); return '"'+v.replace(/"/g,'""')+'"'; }
@@ -545,9 +682,31 @@ function showHelp(){
 }
 
 // ---- wire ----
+// ---- テーマ（ライト/ダーク） ----
+const THEME_KEY="taskweb-theme-v1";
+function getTheme(){ try{ const v=localStorage.getItem(THEME_KEY); if(v==="light"||v==="dark") return v; }catch(e){} return "dark"; }
+function applyTheme(th){
+  document.documentElement.setAttribute("data-theme", th);
+  const m=document.querySelector('meta[name="theme-color"]'); if(m) m.setAttribute("content", th==="light"?"#f4f1fb":"#1a1322");
+  const b=el("btnTheme"); if(b){ b.textContent= th==="light"?"☀️":"🌙"; b.title="テーマ："+(th==="light"?"ライト":"ダーク"); }
+}
+function setTheme(th){ try{ localStorage.setItem(THEME_KEY, th); }catch(e){} applyTheme(th); }
+function toggleTheme(){ setTheme(getTheme()==="dark"?"light":"dark"); }
+// ---- 並び順 ----
+const SORT_MODES=["manual","due","priority","estimate"];
+function sortLabel(s){ return ({manual:"手動（ドラッグで並べ替え）", due:"締切が近い順", priority:"優先度が高い順", estimate:"見積もりが大きい順"})[s]||s; }
+function cycleSort(){
+  if(dragging) return;   // ドラッグ中は並び順を変えない（並べ替えの取りこぼし防止）
+  sort=SORT_MODES[(SORT_MODES.indexOf(sort)+1)%SORT_MODES.length];
+  const b=el("btnSort"); if(b){ b.classList.toggle("on", sort!=="manual"); b.title="並び順："+sortLabel(sort); }
+  toast("並び順：" + sortLabel(sort));
+  render();
+}
 function wire(){
   el("ver").textContent=VERSION;
   el("btnAdd").onclick=addTasks;
+  el("btnTheme").onclick=toggleTheme;
+  el("btnSort").onclick=cycleSort;
   el("input").addEventListener("keydown",e=>{ if((e.metaKey||e.ctrlKey)&&e.key==="Enter"){ e.preventDefault(); addTasks(); } });
   el("search").addEventListener("input",e=>{ search=e.target.value; render(); });
   el("memo").value=state.memo;
@@ -630,6 +789,7 @@ const Cloud = (function(){
   }
   function applyRemote(doc){
     if(editIndex>=0) closeEdit();   // 編集中の取りこぼし防止：開いている編集シートは閉じてから反映
+    pendingUndo=null;               // リモートが正：保留中の「削除の取り消し」は無効化（重複・誤挿入を防ぐ）
     applyingRemote=true;
     try{
       state.tasks=(doc.tasks||[]).map(normTask); state.completions=doc.completions||{};
@@ -641,7 +801,7 @@ const Cloud = (function(){
   function subscribe(){
     unsub=docRef().onSnapshot(function(snap){
       if(!snap.exists || snap.metadata.hasPendingWrites) return;
-      if(pushTimer || editIndex>=0) return;   // 未送信の編集 / 編集シートを開いている間はリモート適用を見送る
+      if(pushTimer || editIndex>=0 || dragging) return;   // 未送信の編集 / 編集シート / ドラッグ中はリモート適用を見送る
       applyRemote(snap.data());
     }, function(e){ console.error("snapshot",e); });
   }
@@ -676,7 +836,7 @@ function renderCloud(){
 }
 
 // ---- init ----
-load(); wire(); render(); Cloud.init();
+applyTheme(getTheme()); load(); wire(); render(); Cloud.init();
 // オフライン対応＆ホーム画面アプリ化（http/https のみ。file:// では登録しない）
 if("serviceWorker" in navigator && /^https?:$/.test(location.protocol)){
   window.addEventListener("load",function(){ navigator.serviceWorker.register("sw.js").catch(function(){}); });
