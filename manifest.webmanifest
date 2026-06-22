@@ -1,0 +1,17 @@
+{
+  "name": "やること",
+  "short_name": "やること",
+  "description": "iPad・スマホ・PCで使えるタスク管理（Windows常駐版と互換／クラウド同期対応）",
+  "lang": "ja",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1a1322",
+  "theme_color": "#1a1322",
+  "icons": [
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

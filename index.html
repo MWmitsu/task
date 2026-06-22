@@ -7,6 +7,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="やること">
 <meta name="theme-color" content="#1a1322">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" href="icon-180.png">
 <title>やること（Web版）</title>
 <style>
   :root{
@@ -44,6 +47,7 @@
   .task{display:flex; align-items:flex-start; gap:9px; padding:11px 8px; border-radius:12px;}
   .task:active{background:#ffffff10;}
   .ck{width:26px; height:26px; flex:none; border-radius:8px; border:2px solid var(--dim); background:transparent; margin-top:1px; position:relative;}
+  .ck::before{content:""; position:absolute; inset:-9px;}  /* タップ判定を広げる（指でも押しやすく） */
   .ck.done{background:var(--green); border-color:var(--green);}
   .ck.done::after{content:"✓"; color:#11210f; position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:16px; font-weight:800;}
   .dot{width:11px; flex:none; align-self:center; color:var(--normal); font-size:13px; margin-top:2px;}
@@ -68,8 +72,9 @@
   /* modal */
   .ov{position:fixed; inset:0; background:#000000a0; display:none; align-items:flex-end; justify-content:center; z-index:50;}
   .ov.show{display:flex;}
-  .sheet{width:100%; max-width:680px; max-height:88vh; overflow:auto; background:var(--bg); border-radius:18px 18px 0 0;
+  .sheet{width:100%; max-width:680px; max-height:88vh; overflow:auto; -webkit-overflow-scrolling:touch; background:var(--bg); border-radius:18px 18px 0 0;
     border-top:2px solid var(--accent); padding:16px 16px calc(20px + env(safe-area-inset-bottom)); box-shadow:0 -12px 40px #000a;}
+  body.modal-open{overflow:hidden;}  /* シート表示中は背面のスクロールを止める */
   .sheet h2{font-size:15px; margin:2px 0 12px; color:var(--text);}
   .chips{display:flex; flex-wrap:wrap; gap:7px;}
   .chip{background:var(--panel); color:var(--sub); border:1px solid var(--line); font-size:13.5px; padding:8px 13px; border-radius:999px;}
@@ -188,6 +193,9 @@ const PRIOS = [
 const DUE_PRESETS = ()=>{ const t=new Date(); const f=(n)=>fmtDate(addDays(t,n));
   return [{l:"なし",v:""},{l:"今日",v:f(0)},{l:"明日",v:f(1)},{l:"+3日",v:f(3)},{l:"+1週",v:f(7)}]; };
 const EST_PRESETS = [{l:"なし",v:0},{l:"15分",v:15},{l:"30分",v:30},{l:"1時間",v:60},{l:"2時間",v:120},{l:"4時間",v:240},{l:"8時間",v:480}];
+const REPEATS = [{key:"",label:"なし"},{key:"daily",label:"毎日"},{key:"weekday",label:"平日"},{key:"weekly",label:"毎週"}];
+function repeatLabel(k){ const r=REPEATS.find(x=>x.key===k); return r?r.label:"なし"; }
+function subDone(t){ return (t.subs||[]).filter(s=>s.done).length; }
 
 // ---- state ----
 let state = { tasks:[], completions:{}, memo:"", hideDone:false };
@@ -200,7 +208,9 @@ function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; 
 function today(){ const d=new Date(); d.setHours(0,0,0,0); return d; }
 function todayStr(){ return fmtDate(today()); }
 function parseDate(s){ if(!s) return null; const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(s); if(!m) return null;
-  const d=new Date(+m[1],+m[2]-1,+m[3]); d.setHours(0,0,0,0); return d; }
+  const y=+m[1], mo=+m[2], day=+m[3]; if(mo<1||mo>12||day<1||day>31) return null;
+  const d=new Date(y,mo-1,day); if(d.getMonth()!==mo-1||d.getDate()!==day) return null;
+  d.setHours(0,0,0,0); return d; }
 function dueLEToday(s){ const d=parseDate(s); return d? d.getTime()<=today().getTime():false; }
 
 // ---- persistence ----
@@ -209,16 +219,22 @@ function load(){
     state.tasks=(o.tasks||[]).map(normTask); state.completions=o.completions||{}; state.memo=o.memo||""; state.hideDone=!!o.hideDone; }
   }catch(e){}
 }
-function save(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){} try{ Cloud.onLocalChange(); }catch(e){} }
+function save(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ try{ if(e&&(e.name==="QuotaExceededError"||/quota/i.test(e.message||""))) toast("保存できません（端末の保存容量がいっぱいです）"); }catch(_){} } try{ Cloud.onLocalChange(); }catch(e){} }
 function normTask(t){
+  const rawEst = (t.estimate!=null? t.estimate : (t.estimate_min!=null? t.estimate_min : 0));
   return {
-    text:String(t.text||""), done:!!t.done, due:String(t.due||""),
+    text:String(t.text||""),
+    done:(t.done===true||t.done===1||/^(?:true|1)$/i.test(String(t.done))),
+    due:String(t.due||""),
     cat:catKey(t.cat), note:String(t.note||""), repeat:String(t.repeat||""),
-    estimate: (parseInt(t.estimate||t.estimate_min||0,10)||0),
+    estimate: Math.max(0, parseInt(rawEst,10)||0),
     priority: prioKey(t.priority),
-    tags: Array.isArray(t.tags)? t.tags.map(String).filter(Boolean)
-          : (typeof t.tags==="string" && t.tags? t.tags.split(/[|\s]+/).filter(Boolean):[]),
-    subs: Array.isArray(t.subs)? t.subs:[],
+    tags: Array.isArray(t.tags)? t.tags.map(String).map(s=>s.trim()).filter(Boolean)
+          : (typeof t.tags==="string" && t.tags? t.tags.split(/[|\r\n]+/).map(s=>s.trim()).filter(Boolean):[]),
+    subs: Array.isArray(t.subs)? t.subs.map(s=>({text:String(s&&s.text||""),done:!!(s&&s.done)})).filter(s=>s.text):[],
+    // Windows常駐版の項目はそのまま温存（Web版では未編集でも往復で失わない）
+    alarm:String(t.alarm||""), alarmFired:!!t.alarmFired,
+    elapsed:(parseFloat(t.elapsed)||0), running:!!t.running, runStart:(parseFloat(t.runStart)||0),
   };
 }
 function catKey(v){ v=String(v==null?"":v); for(const c of CATS){ if(c.key===v||c.label===v) return c.key; } return "normal"; }
@@ -233,11 +249,12 @@ function parseDueHint(text){
   const base=today();
   const simple=[[/^(今日)(?=[\s　]|$)/,0],[/^(明日)(?=[\s　]|$)/,1],[/^(明後日)(?=[\s　]|$)/,2],
     [/^(明々後日|明明後日)(?=[\s　]|$)/,3],[/^(来週)(?=[\s　]|$)/,7]];
-  for(const [re,off] of simple){ const m=re.exec(s); if(m) return {due:fmtDate(addDays(base,off)), rest:s.slice(m[0].length).trim()}; }
+  const jtrim=(x)=>String(x).replace(/^[\s　]+|[\s　]+$/g,"");
+  for(const [re,off] of simple){ const m=re.exec(s); if(m) return {due:fmtDate(addDays(base,off)), rest:jtrim(s.slice(m[0].length))}; }
   const wd={"日":0,"月":1,"火":2,"水":3,"木":4,"金":5,"土":6};
   const wm=/^([日月火水木金土])曜日?(?=[\s　]|$)/.exec(s);
   if(wm){ const target=wd[wm[1]]; const cur=base.getDay(); const delta=((target-cur)+7)%7;
-    return {due:fmtDate(addDays(base,delta)), rest:s.slice(wm[0].length).trim()}; }
+    return {due:fmtDate(addDays(base,delta)), rest:jtrim(s.slice(wm[0].length))}; }
   return {due:"", rest:String(text)};
 }
 function estLabel(min){ min=parseInt(min,10)||0; if(min<=0) return ""; const h=Math.floor(min/60), m=min%60;
@@ -246,7 +263,7 @@ function estLabel(min){ min=parseInt(min,10)||0; if(min<=0) return ""; const h=M
 // ---- add / current defaults ----
 function curCat(){ return filter==="now"?"now":filter==="any"?"any":"normal"; }
 function curDue(){ return filter==="today"?todayStr():""; }
-function newTask(text){ return {text:text,done:false,due:curDue(),cat:curCat(),note:"",repeat:"",estimate:0,priority:"",tags:[],subs:[]}; }
+function newTask(text){ return {text:text,done:false,due:curDue(),cat:curCat(),note:"",repeat:"",estimate:0,priority:"",tags:[],subs:[],alarm:"",alarmFired:false,elapsed:0,running:false,runStart:0}; }
 function addTasks(){
   const raw=el("input").value; if(!raw.trim()) return; let added=0;
   for(const ln of raw.split(/\r\n|\r|\n/)){
@@ -327,7 +344,9 @@ function renderList(){
     const badges=document.createElement("div"); badges.className="badges";
     const pi=prioInfo(t.priority); if(pi.key){ const b=mkBadge(pi.badge,"b "+pi.cls); badges.appendChild(b); }
     const di=dueInfo(t.due); if(di){ const b=mkBadge((t.repeat?"🔁":"")+di.label,"b "+di.cls); badges.appendChild(b); }
+    else if(t.repeat){ badges.appendChild(mkBadge("🔁"+repeatLabel(t.repeat),"b")); }
     if(parseInt(t.estimate,10)>0){ badges.appendChild(mkBadge("📐"+estLabel(t.estimate),"b")); }
+    if((t.subs||[]).length){ badges.appendChild(mkBadge("☑"+subDone(t)+"/"+t.subs.length,"b")); }
     (t.tags||[]).forEach(tag=>{ const b=mkBadge("#"+tag,"b tag");
       b.onclick=(e)=>{ e.stopPropagation(); el("search").value=tag; search=tag; render(); }; badges.appendChild(b); });
     if(t.note){ badges.appendChild(mkBadge("📝"+t.note.slice(0,18),"b note")); }
@@ -346,8 +365,9 @@ function toggleDone(i){ const t=state.tasks[i]; if(!t) return;
   save(); render(); }
 
 // ---- edit sheet ----
-function openEdit(i){ editIndex=i; buildEditSheet(); el("editOv").classList.add("show"); }
-function closeEdit(){ editIndex=-1; el("editOv").classList.remove("show"); }
+function syncModalLock(){ try{ document.body.classList.toggle("modal-open", !!document.querySelector(".ov.show")); }catch(e){} }
+function openEdit(i){ editIndex=i; buildEditSheet(); el("editOv").classList.add("show"); syncModalLock(); }
+function closeEdit(){ editIndex=-1; el("editOv").classList.remove("show"); syncModalLock(); }
 function buildEditSheet(){
   const t=state.tasks[editIndex]; if(!t){ closeEdit(); return; }
   const s=el("editSheet"); s.innerHTML="";
@@ -363,8 +383,15 @@ function buildEditSheet(){
   s.appendChild(tagEditor(t));
   s.appendChild(label("締切"));
   s.appendChild(chipRow(DUE_PRESETS().map(d=>({label:d.l,on:String(t.due)===String(d.v),fn:()=>{ t.due=d.v; commitEdit(); }}))));
+  const dwrap=document.createElement("div"); dwrap.style.marginTop="8px";
+  const di=document.createElement("input"); di.type="date"; di.value=String(t.due||""); di.style.maxWidth="190px";
+  di.onchange=()=>{ t.due=di.value; commitEdit(); }; dwrap.appendChild(di); s.appendChild(dwrap);
   s.appendChild(label("📐 見積もり"+(parseInt(t.estimate,10)>0?"："+estLabel(t.estimate):"")));
   s.appendChild(chipRow(EST_PRESETS.map(e=>({label:e.l,on:(parseInt(t.estimate,10)||0)===e.v,fn:()=>{ t.estimate=e.v; commitEdit(); }}))));
+  s.appendChild(label("🔁 繰り返し"));
+  s.appendChild(chipRow(REPEATS.map(r=>({label:r.label,on:String(t.repeat||"")===r.key,fn:()=>{ t.repeat=r.key; commitEdit(); }}))));
+  s.appendChild(label("☑ サブタスク ("+subDone(t)+"/"+(t.subs||[]).length+")"));
+  s.appendChild(subEditor(t));
   // actions
   const act=document.createElement("div"); act.className="actions";
   act.appendChild(linkBtn("↑ 上へ",()=>{ moveTask(editIndex,-1); }));
@@ -390,6 +417,31 @@ function tagEditor(t){
   const inp=document.createElement("input"); inp.type="text"; inp.placeholder="タグを入力 → 追加（# は自動で外れます）";
   const add=()=>{ let v=inp.value.trim().replace(/^[#＃]/,"").trim(); if(!v) return;
     if(!t.tags) t.tags=[]; if(!t.tags.includes(v)) t.tags.push(v); inp.value=""; commitEdit(); };
+  inp.onkeydown=(e)=>{ if(e.key==="Enter"){ e.preventDefault(); add(); } };
+  const ab=document.createElement("button"); ab.className="add"; ab.style.fontSize="18px"; ab.style.minWidth="44px"; ab.textContent="＋"; ab.onclick=add;
+  r.appendChild(inp); r.appendChild(ab); box.appendChild(r);
+  return box;
+}
+function subEditor(t){
+  if(!Array.isArray(t.subs)) t.subs=[];
+  const box=document.createElement("div");
+  t.subs.forEach((sb,si)=>{
+    const row=document.createElement("div"); row.style.display="flex"; row.style.alignItems="center"; row.style.gap="8px"; row.style.margin="4px 0";
+    const ck=document.createElement("button"); ck.type="button"; ck.textContent=sb.done?"✓":"";
+    ck.style.cssText="width:24px;height:24px;flex:0 0 auto;border-radius:7px;border:2px solid var(--line);background:"+(sb.done?"var(--green)":"transparent")+";color:#fff;font-size:14px;line-height:1;cursor:pointer;";
+    ck.setAttribute("aria-label", sb.done?"完了を取り消す":"完了にする");
+    ck.onclick=()=>{ sb.done=!sb.done; commitEdit(); };
+    const tx=document.createElement("span"); tx.textContent=sb.text; tx.style.flex="1"; tx.style.fontSize="14px"; tx.style.wordBreak="break-word";
+    if(sb.done){ tx.style.textDecoration="line-through"; tx.style.color="var(--muted)"; }
+    const del=document.createElement("button"); del.type="button"; del.textContent="✕";
+    del.style.cssText="flex:0 0 auto;width:32px;height:32px;border:none;background:transparent;color:var(--muted);font-size:15px;cursor:pointer;";
+    del.setAttribute("aria-label","サブタスクを削除");
+    del.onclick=()=>{ t.subs.splice(si,1); commitEdit(); };
+    row.appendChild(ck); row.appendChild(tx); row.appendChild(del); box.appendChild(row);
+  });
+  const r=document.createElement("div"); r.className="row"; r.style.marginTop="4px";
+  const inp=document.createElement("input"); inp.type="text"; inp.placeholder="サブタスクを追加 → Enter";
+  const add=()=>{ const v=inp.value.trim(); if(!v) return; t.subs.push({text:v,done:false}); inp.value=""; commitEdit(); };
   inp.onkeydown=(e)=>{ if(e.key==="Enter"){ e.preventDefault(); add(); } };
   const ab=document.createElement("button"); ab.className="add"; ab.style.fontSize="18px"; ab.style.minWidth="44px"; ab.textContent="＋"; ab.onclick=add;
   r.appendChild(inp); r.appendChild(ab); box.appendChild(r);
@@ -424,7 +476,7 @@ function exportCsv(){
   toast("📤 CSVを書き出しました");
 }
 function parseCsv(text){
-  text=text.replace(/^﻿/,""); const rows=[]; let row=[], cur="", q=false;
+  text=text.replace(/^﻿/,"").replace(/\r\n/g,"\n").replace(/\r/g,"\n"); const rows=[]; let row=[], cur="", q=false;
   for(let i=0;i<text.length;i++){ const ch=text[i];
     if(q){ if(ch==='"'){ if(text[i+1]==='"'){ cur+='"'; i++; } else q=false; } else cur+=ch; }
     else { if(ch==='"') q=true; else if(ch===","){ row.push(cur); cur=""; }
@@ -456,7 +508,7 @@ function importCsv(text){
 
 // ---- JSON ----
 function exportJson(){
-  download("taskweb_"+stamp()+".json", JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo},null,2), "application/json");
+  download("taskweb_"+stamp()+".json", JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone},null,2), "application/json");
   toast("📤 JSONを書き出しました");
 }
 function importJson(text){
@@ -466,6 +518,7 @@ function importJson(text){
   for(const raw of arr){ const t=normTask(raw); if(!t.text||exist.has(t.text)) continue; state.tasks.push(t); exist.add(t.text); n++; }
   if(o && o.completions && typeof o.completions==="object"){ for(const k in o.completions){ state.completions[k]=Math.max(state.completions[k]||0, o.completions[k]||0); } }
   if(o && typeof o.memo==="string" && !state.memo) state.memo=o.memo;
+  if(o && typeof o.hideDone==="boolean") state.hideDone=o.hideDone;
   el("memo").value=state.memo; save(); render(); toast("📥 "+n+" 件を取り込みました");
 }
 function stamp(){ const d=new Date(); return d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+"_"+pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds()); }
@@ -488,7 +541,7 @@ function showHelp(){
     "<b>データ</b>：右上 ⇅ から、Windows版とCSV/JSONでやり取り・バックアップ",
     "<b>ホーム画面に追加</b>：Safariの共有 → 「ホーム画面に追加」でアプリのように使えます",
   ].map(s=>"・"+s).join("<br>");
-  el("helpOv").classList.add("show");
+  el("helpOv").classList.add("show"); syncModalLock();
 }
 
 // ---- wire ----
@@ -502,18 +555,18 @@ function wire(){
   el("btnHideDone").onclick=()=>{ state.hideDone=!state.hideDone; save(); render(); };
   el("btnClearDone").onclick=()=>{ if(confirm("完了したタスクを消しますか？")){ state.tasks=state.tasks.filter(t=>!t.done); save(); render(); } };
   el("editOv").onclick=(e)=>{ if(e.target.id==="editOv"){ commitEdit(); closeEdit(); } };
-  el("btnData").onclick=()=>{ renderCloud(); el("dataOv").classList.add("show"); };
-  el("dataClose").onclick=()=>el("dataOv").classList.remove("show");
-  el("dataOv").onclick=(e)=>{ if(e.target.id==="dataOv") el("dataOv").classList.remove("show"); };
-  el("btnHelp").onclick=showHelp; el("helpClose").onclick=()=>el("helpOv").classList.remove("show");
-  el("helpOv").onclick=(e)=>{ if(e.target.id==="helpOv") el("helpOv").classList.remove("show"); };
+  el("btnData").onclick=()=>{ renderCloud(); el("dataOv").classList.add("show"); syncModalLock(); };
+  el("dataClose").onclick=()=>{ el("dataOv").classList.remove("show"); syncModalLock(); };
+  el("dataOv").onclick=(e)=>{ if(e.target.id==="dataOv"){ el("dataOv").classList.remove("show"); syncModalLock(); } };
+  el("btnHelp").onclick=showHelp; el("helpClose").onclick=()=>{ el("helpOv").classList.remove("show"); syncModalLock(); };
+  el("helpOv").onclick=(e)=>{ if(e.target.id==="helpOv"){ el("helpOv").classList.remove("show"); syncModalLock(); } };
   el("expCsv").onclick=exportCsv; el("expJson").onclick=exportJson;
   el("impCsv").onclick=()=>pickFile("csv"); el("impJson").onclick=()=>pickFile("json");
   el("filePick").addEventListener("change",function(){
     const f=this.files[0]; if(!f) return; const reader=new FileReader();
     reader.onload=()=>{ const text=String(reader.result||"");
       if(pendingImport==="csv" || /\.csv$/i.test(f.name)) importCsv(text); else importJson(text);
-      el("dataOv").classList.remove("show"); };
+      el("dataOv").classList.remove("show"); syncModalLock(); };
     reader.readAsText(f,"utf-8");
   });
 }
@@ -531,7 +584,7 @@ const Cloud = (function(){
   };
   const COLL="taskweb";
   let available=(typeof firebase!=="undefined" && firebase.initializeApp);
-  let auth=null, db=null, user=null, unsub=null, pushTimer=null, applyingRemote=false;
+  let auth=null, db=null, user=null, unsub=null, pushTimer=null, applyingRemote=false, reconciling=false, authGen=0;
   function supportedEnv(){ return /^(https?:|chrome-extension:)$/.test(location.protocol); }
   function isAvailable(){ return !!(available && auth && supportedEnv()); }
   function status(){ return {available:isAvailable(), signedIn:!!user, email:user?user.email:null, protocol:location.protocol}; }
@@ -559,12 +612,15 @@ const Cloud = (function(){
   }
   function signOutNow(){ if(auth) auth.signOut(); }
   function docRef(){ return db.collection(COLL).doc(user.uid); }
-  function hasData(d){ return !!(d && d.tasks && d.tasks.length); }
+  function hasData(d){ return !!(d && ((d.tasks&&d.tasks.length) || (d.completions&&Object.keys(d.completions).length) || d.memo)); }
   function onAuth(u){
     user=u; if(unsub){ unsub(); unsub=null; } renderCloud();
-    if(!u) return;
-    docRef().get().then(function(snap){ reconcile(snap.exists?snap.data():null); })
-      .catch(function(e){ console.error("cloud get",e); }).then(function(){ subscribe(); renderCloud(); });
+    if(!u){ reconciling=false; return; }
+    const myGen=++authGen;
+    reconciling=true;   // 突き合わせ中はローカル→クラウドのpushを止め、空データでの上書きを防ぐ
+    docRef().get().then(function(snap){ if(myGen!==authGen) return; reconcile(snap.exists?snap.data():null); })
+      .catch(function(e){ console.error("cloud get",e); })
+      .then(function(){ reconciling=false; if(myGen===authGen){ subscribe(); renderCloud(); } });
   }
   function reconcile(cloud){
     if(!hasData(cloud)){ pushNow(); return; }
@@ -573,23 +629,26 @@ const Cloud = (function(){
     if(useCloud) applyRemote(cloud); else pushNow();
   }
   function applyRemote(doc){
+    if(editIndex>=0) closeEdit();   // 編集中の取りこぼし防止：開いている編集シートは閉じてから反映
     applyingRemote=true;
-    state.tasks=(doc.tasks||[]).map(normTask); state.completions=doc.completions||{};
-    state.memo=doc.memo||""; state.hideDone=!!doc.hideDone;
-    try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){}
-    applyingRemote=false; el("memo").value=state.memo; render();
+    try{
+      state.tasks=(doc.tasks||[]).map(normTask); state.completions=doc.completions||{};
+      state.memo=doc.memo||""; state.hideDone=!!doc.hideDone;
+      try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){}
+    } finally { applyingRemote=false; }
+    el("memo").value=state.memo; render();
   }
   function subscribe(){
     unsub=docRef().onSnapshot(function(snap){
       if(!snap.exists || snap.metadata.hasPendingWrites) return;
-      if(pushTimer) return;
+      if(pushTimer || editIndex>=0) return;   // 未送信の編集 / 編集シートを開いている間はリモート適用を見送る
       applyRemote(snap.data());
     }, function(e){ console.error("snapshot",e); });
   }
-  function onLocalChange(){ if(applyingRemote||!user||!db) return; if(pushTimer) clearTimeout(pushTimer); pushTimer=setTimeout(pushNow,800); }
+  function onLocalChange(){ if(applyingRemote||reconciling||!user||!db) return; if(pushTimer) clearTimeout(pushTimer); pushTimer=setTimeout(pushNow,800); }
   function pushNow(){ pushTimer=null; if(!user||!db) return;
     const doc={tasks:state.tasks, completions:state.completions, memo:state.memo, hideDone:state.hideDone, _updatedAt:new Date().toISOString()};
-    docRef().set(doc).catch(function(e){ console.error("cloud push",e); });
+    docRef().set(doc).catch(function(e){ console.error("cloud push",e); try{ toast("クラウド同期に失敗（次の変更時に再送します）"); }catch(_){} });
   }
   return { init, status, signIn, signOut:signOutNow, onLocalChange, pushNow };
 })();
@@ -603,7 +662,10 @@ function renderCloud(){
     act.innerHTML=""; return;
   }
   if(st.signedIn){
-    box.innerHTML="クラウド同期：<b style='color:var(--green)'>オン</b>　"+escapeHtml(st.email||"")+"<br>複数端末で自動同期中";
+    box.textContent=""; box.appendChild(document.createTextNode("クラウド同期："));
+    const b=document.createElement("b"); b.style.color="var(--green)"; b.textContent="オン"; box.appendChild(b);
+    box.appendChild(document.createTextNode("　"+(st.email||""))); box.appendChild(document.createElement("br"));
+    box.appendChild(document.createTextNode("複数端末で自動同期中"));
     act.innerHTML=""; act.appendChild(linkBtn("ログアウト",()=>Cloud.signOut()));
   } else {
     box.textContent="クラウド同期：オフ — Googleでログインすると複数端末で同期できます";
@@ -615,6 +677,10 @@ function renderCloud(){
 
 // ---- init ----
 load(); wire(); render(); Cloud.init();
+// オフライン対応＆ホーム画面アプリ化（http/https のみ。file:// では登録しない）
+if("serviceWorker" in navigator && /^https?:$/.test(location.protocol)){
+  window.addEventListener("load",function(){ navigator.serviceWorker.register("sw.js").catch(function(){}); });
+}
 window.TASKWEB = { state, get tasks(){return state.tasks;}, addTasks, exportCsv, importCsv, parseCsv, parseDueHint,
   matchFilter, setFilter:(f)=>{filter=f;}, catKey, prioKey, estLabel, cloudStatus:()=>Cloud.status() };
 </script>
