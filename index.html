@@ -86,7 +86,8 @@
   .search{margin:8px 0 2px;}
   .qstat{color:var(--sub); font-size:12px; margin:8px 2px 2px;}
   .list{margin-top:8px; display:flex; flex-direction:column; gap:2px; overflow-x:hidden;}
-  .task{display:flex; align-items:flex-start; gap:9px; padding:11px 8px; border-radius:12px; touch-action:pan-y; will-change:transform;}
+  .task{display:flex; align-items:flex-start; gap:9px; padding:11px 8px; border-radius:12px; touch-action:pan-y; will-change:transform;
+    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;}  /* 長押しドラッグ時に文字選択・コールアウトを出さない */
   .task:active{background:#ffffff10;}
   .task.dragging{opacity:.65; background:var(--panel2); box-shadow:0 6px 18px #0007; position:relative; z-index:3;}
   .ck{width:26px; height:26px; flex:none; border-radius:8px; border:2px solid var(--dim); background:transparent; margin-top:1px; position:relative;}
@@ -505,9 +506,9 @@ function renderList(){
   if(!any){ const e=document.createElement("div"); e.className="empty";
     e.textContent= state.tasks.length? "この条件のタスクはありません":"タスクはありません。上の欄に書いて ＋ で追加"; list.appendChild(e); }
 }
-// ---- 行ジェスチャー：スワイプで完了/削除・ドラッグで並べ替え（タッチ＆マウス対応） ----
+// ---- 行ジェスチャー：横スワイプで完了/削除・「●」または長押しで上下ドラッグ並べ替え（タッチ＆マウス対応） ----
 let dragging=false;          // ドラッグ中はクラウド反映・並び替えを止める
-let swiping=false;           // スワイプ確定中は定期再描画でDOMを作り直さない（操作の取りこぼし防止）
+let swiping=false;           // 行ジェスチャー進行中は定期再描画でDOMを作り直さない（操作の取りこぼし防止）
 let suppressClickUntil=0;    // ジェスチャー直後の合成clickを抑止（時間で自動失効＝フラグが残らない）
 function attachRowGestures(row, i){
   row.addEventListener("pointerdown", function(e){
@@ -515,64 +516,62 @@ function attachRowGestures(row, i){
     const onDot=e.target.closest(".dot");
     const onInteractive=e.target.closest(".ck, .b, .rowright");
     if(onInteractive && !onDot) return;          // チェックボックス・タグ等は通常タップに任せる
-    if(onDot && sort==="manual"){ startDrag(e, row); }
-    else { startSwipe(e, i, row); }
+    startGesture(e, i, row, !!(onDot && sort==="manual"));   // ●(手動並び順)は即ドラッグ、行は長押しでドラッグ
   });
 }
-function startSwipe(e, i, row){
+function startGesture(e, i, row, immediateDrag){
   const pid=e.pointerId, startX=e.clientX, startY=e.clientY;
-  const task=state.tasks[i];                     // 並び替え・同期で添字がずれても同一タスクを操作するため実体を保持
-  let dx=0, decided=false, active=false;
+  const task=state.tasks[i], list=el("list");    // 添字がずれても同一タスクを操作できるよう実体を保持
+  let mode="", dx=0, lpTimer=null;
+  swiping=true;
+  function beginDrag(){
+    mode="drag"; dragging=true; suppressClickUntil=Date.now()+600;
+    try{ row.setPointerCapture(pid); }catch(_){}
+    row.classList.add("dragging"); row.style.touchAction="none";
+    try{ if(navigator.vibrate) navigator.vibrate(12); }catch(_){}   // 「掴めた」合図（対応端末のみ）
+  }
+  if(immediateDrag){ beginDrag(); }
+  else { lpTimer=setTimeout(function(){ if(mode||sort!=="manual") return; beginDrag(); }, 450); }   // 長押し450msでドラッグ開始（手動並び順のみ）
   function onMove(ev){
-    dx=ev.clientX-startX; const dy=ev.clientY-startY;
-    if(!decided){
-      if(Math.abs(dx)<8 && Math.abs(dy)<8) return;
-      decided=true; active=Math.abs(dx) > Math.abs(dy)*1.3;
-      if(active){ try{ row.setPointerCapture(pid); }catch(_){} swiping=true; }
+    if(mode==="drag"){
+      if(ev.cancelable) ev.preventDefault(); suppressClickUntil=Date.now()+600;
+      row.style.pointerEvents="none"; const under=document.elementFromPoint(ev.clientX, ev.clientY); row.style.pointerEvents="";
+      const target=under && under.closest(".task");
+      if(target && target!==row && target.parentNode===list){ const rect=target.getBoundingClientRect();
+        if(ev.clientY < rect.top+rect.height/2) list.insertBefore(row, target); else list.insertBefore(row, target.nextSibling); }
+      return;
     }
-    if(active){
-      if(ev.cancelable) ev.preventDefault();
+    if(mode==="swipe"){
+      dx=ev.clientX-startX; if(ev.cancelable) ev.preventDefault();
       row.style.transition="none"; row.style.transform="translateX("+dx+"px)";
       row.style.background = dx>0? "rgba(90,200,122,.20)" : (dx<0? "rgba(255,90,82,.20)":"");
+      return;
     }
+    const mx=ev.clientX-startX, my=ev.clientY-startY;     // 判定前
+    if(Math.abs(mx)<8 && Math.abs(my)<8) return;          // 微動は長押し待ち
+    if(lpTimer){ clearTimeout(lpTimer); lpTimer=null; }
+    if(Math.abs(mx) > Math.abs(my)){ mode="swipe"; try{ row.setPointerCapture(pid); }catch(_){} onMove(ev); }  // 横→スワイプ
+    else { mode="scroll"; cleanup(); }                    // 縦→ブラウザのスクロールに任せる
   }
   function onUp(){
-    row.removeEventListener("pointermove",onMove); row.removeEventListener("pointerup",onUp); row.removeEventListener("pointercancel",onUp);
+    if(mode==="drag"){ suppressClickUntil=Date.now()+400; commitDragOrder(); }
+    else if(mode==="swipe"){
+      suppressClickUntil=Date.now()+400; const TH=80; const cur=()=>state.tasks.indexOf(task);
+      if(dx>TH){ row.style.transition="transform .15s ease"; row.style.transform="translateX(115%)"; setTimeout(()=>{ const j=cur(); if(j>=0) toggleDone(j); },130); }
+      else if(dx<-TH){ row.style.transition="transform .15s ease"; row.style.transform="translateX(-115%)"; setTimeout(()=>{ const j=cur(); if(j>=0) deleteTaskUndoable(j); },130); }
+      else { row.style.transition="transform .15s ease, background .15s ease"; row.style.transform=""; row.style.background=""; }
+    }
+    cleanup();
+  }
+  function onCancel(){ if(mode==="swipe"){ row.style.transition="transform .15s ease"; row.style.transform=""; row.style.background=""; } cleanup(); }
+  function cleanup(){
+    if(lpTimer){ clearTimeout(lpTimer); lpTimer=null; }
+    row.removeEventListener("pointermove",onMove); row.removeEventListener("pointerup",onUp); row.removeEventListener("pointercancel",onCancel);
     try{ row.releasePointerCapture(pid); }catch(_){}
+    if(mode==="drag"){ dragging=false; row.classList.remove("dragging"); row.style.touchAction=""; }
     swiping=false;
-    if(active) suppressClickUntil=Date.now()+400;
-    const TH=80;
-    const cur=()=>state.tasks.indexOf(task);     // 発火時点の現在の添字を解決
-    if(active && dx>TH){ row.style.transition="transform .15s ease"; row.style.transform="translateX(115%)"; setTimeout(()=>{ const j=cur(); if(j>=0) toggleDone(j); },130); return; }
-    if(active && dx<-TH){ row.style.transition="transform .15s ease"; row.style.transform="translateX(-115%)"; setTimeout(()=>{ const j=cur(); if(j>=0) deleteTaskUndoable(j); },130); return; }
-    row.style.transition="transform .15s ease, background .15s ease"; row.style.transform=""; row.style.background="";
   }
-  row.addEventListener("pointermove",onMove); row.addEventListener("pointerup",onUp); row.addEventListener("pointercancel",onUp);
-}
-function startDrag(e, row){
-  const pid=e.pointerId; const list=el("list"); let moved=false;
-  try{ row.setPointerCapture(pid); }catch(_){}
-  dragging=true; row.classList.add("dragging");
-  function onMove(ev){
-    if(ev.cancelable) ev.preventDefault();
-    moved=true; suppressClickUntil=Date.now()+400;
-    row.style.pointerEvents="none";
-    const under=document.elementFromPoint(ev.clientX, ev.clientY);
-    row.style.pointerEvents="";
-    const target=under && under.closest(".task");
-    if(target && target!==row && target.parentNode===list){
-      const rect=target.getBoundingClientRect();
-      if(ev.clientY < rect.top+rect.height/2) list.insertBefore(row, target);
-      else list.insertBefore(row, target.nextSibling);
-    }
-  }
-  function onUp(){
-    row.removeEventListener("pointermove",onMove); row.removeEventListener("pointerup",onUp); row.removeEventListener("pointercancel",onUp);
-    try{ row.releasePointerCapture(pid); }catch(_){}
-    dragging=false; row.classList.remove("dragging");
-    if(moved){ suppressClickUntil=Date.now()+400; commitDragOrder(); }
-  }
-  row.addEventListener("pointermove",onMove); row.addEventListener("pointerup",onUp); row.addEventListener("pointercancel",onUp);
+  row.addEventListener("pointermove",onMove); row.addEventListener("pointerup",onUp); row.addEventListener("pointercancel",onCancel);
 }
 function commitDragOrder(){
   // DOMの新しい並び順を、表示対象タスクが占めていた元の位置へ詰め直す（非表示タスクは不動）
