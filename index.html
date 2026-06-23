@@ -70,6 +70,7 @@
   .b.due-tom{background:#e8c84d22; color:#e8d27a;}
   .b.pri-high{background:#ff5a5224; color:#ff8a82;} .b.pri-mid{background:#f0a84d22; color:#f4c178;} .b.pri-low{background:#6fb0e622; color:#9ccdf2;}
   .b.tag{background:#7a6fb033; color:#cbb8ff;}
+  .b.run{background:#5ac87a2e; color:#9be7b4;}
   .b.note{background:transparent; color:var(--dim); padding-left:0;}
   /* ライトテーマ：バッジは暗い文字＋濃いめ背景でコントラストを確保 */
   html[data-theme="light"] .b{background:#1a132212; color:#4a4470;}
@@ -80,6 +81,7 @@
   html[data-theme="light"] .b.pri-mid{background:#c77a2a22; color:#8f5512;}
   html[data-theme="light"] .b.pri-low{background:#3f7fc022; color:#2a5c93;}
   html[data-theme="light"] .b.tag{background:#7a6fb02e; color:#4b3f8f;}
+  html[data-theme="light"] .b.run{background:#2f9e5422; color:#1d6e39;}
   html[data-theme="light"] .b.note{color:#5b5482;}
   html[data-theme="light"] .task.is-done .ttext{color:#9a93b8;}
   html[data-theme="light"] .task:active{background:#1a132208;}
@@ -243,8 +245,10 @@ function load(){
   try{ const raw=localStorage.getItem(LS_KEY); if(raw){ const o=JSON.parse(raw);
     state.tasks=(o.tasks||[]).map(normTask); state.completions=o.completions||{}; state.memo=o.memo||""; state.hideDone=!!o.hideDone; }
   }catch(e){}
+  // 計測中タスクは再開時点から数え直す（アプリを閉じていた時間は実働に含めない）
+  state.tasks.forEach(t=>{ if(t.running) t.runStart=Date.now(); });
 }
-function save(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ try{ if(e&&(e.name==="QuotaExceededError"||/quota/i.test(e.message||""))) toast("保存できません（端末の保存容量がいっぱいです）"); }catch(_){} } try{ Cloud.onLocalChange(); }catch(e){} }
+function save(){ try{ checkpointTimers(); }catch(e){} try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ try{ if(e&&(e.name==="QuotaExceededError"||/quota/i.test(e.message||""))) toast("保存できません（端末の保存容量がいっぱいです）"); }catch(_){} } try{ Cloud.onLocalChange(); }catch(e){} }
 function normTask(t){
   const rawEst = (t.estimate!=null? t.estimate : (t.estimate_min!=null? t.estimate_min : 0));
   return {
@@ -259,7 +263,9 @@ function normTask(t){
     subs: Array.isArray(t.subs)? t.subs.map(s=>({text:String(s&&s.text||""),done:!!(s&&s.done)})).filter(s=>s.text):[],
     // Windows常駐版の項目はそのまま温存（Web版では未編集でも往復で失わない）
     alarm:String(t.alarm||""), alarmFired:!!t.alarmFired,
-    elapsed:(parseFloat(t.elapsed)||0), running:!!t.running, runStart:(parseFloat(t.runStart)||0),
+    elapsed:Math.max(0,parseFloat(t.elapsed)||0),
+    running:(!!t.running && (parseFloat(t.runStart)||0)>0),   // running なのに runStart 無し＝壊れた状態は停止扱い
+    runStart:Math.max(0,parseFloat(t.runStart)||0),
   };
 }
 function catKey(v){ v=String(v==null?"":v); for(const c of CATS){ if(c.key===v||c.label===v) return c.key; } return "normal"; }
@@ -389,6 +395,8 @@ function renderList(){
     else if(t.repeat){ badges.appendChild(mkBadge("🔁"+repeatLabel(t.repeat),"b")); }
     if(parseInt(t.estimate,10)>0){ badges.appendChild(mkBadge("📐"+estLabel(t.estimate),"b")); }
     if((t.subs||[]).length){ badges.appendChild(mkBadge("☑"+subDone(t)+"/"+t.subs.length,"b")); }
+    if(t.alarm && !t.done){ const ad=parseAlarm(t.alarm); if(ad){ badges.appendChild(mkBadge((t.alarmFired?"⏰済 ":"⏰")+(ad.getMonth()+1)+"/"+ad.getDate()+" "+pad(ad.getHours())+":"+pad(ad.getMinutes()),"b"+(t.alarmFired?"":" due-today"))); } }
+    if(t.running || (parseFloat(t.elapsed)||0)>0){ badges.appendChild(mkBadge((t.running?"▶ ":"⏱")+fmtElapsed(elapsedSeconds(t)),"b"+(t.running?" run":""))); }
     (t.tags||[]).forEach(tag=>{ const b=mkBadge("#"+tag,"b tag");
       b.onclick=(e)=>{ e.stopPropagation(); el("search").value=tag; search=tag; render(); }; badges.appendChild(b); });
     if(t.note){ badges.appendChild(mkBadge("📝"+t.note.slice(0,18),"b note")); }
@@ -404,6 +412,7 @@ function renderList(){
 }
 // ---- 行ジェスチャー：スワイプで完了/削除・ドラッグで並べ替え（タッチ＆マウス対応） ----
 let dragging=false;          // ドラッグ中はクラウド反映・並び替えを止める
+let swiping=false;           // スワイプ確定中は定期再描画でDOMを作り直さない（操作の取りこぼし防止）
 let suppressClickUntil=0;    // ジェスチャー直後の合成clickを抑止（時間で自動失効＝フラグが残らない）
 function attachRowGestures(row, i){
   row.addEventListener("pointerdown", function(e){
@@ -424,7 +433,7 @@ function startSwipe(e, i, row){
     if(!decided){
       if(Math.abs(dx)<8 && Math.abs(dy)<8) return;
       decided=true; active=Math.abs(dx) > Math.abs(dy)*1.3;
-      if(active){ try{ row.setPointerCapture(pid); }catch(_){} }
+      if(active){ try{ row.setPointerCapture(pid); }catch(_){} swiping=true; }
     }
     if(active){
       if(ev.cancelable) ev.preventDefault();
@@ -435,6 +444,7 @@ function startSwipe(e, i, row){
   function onUp(){
     row.removeEventListener("pointermove",onMove); row.removeEventListener("pointerup",onUp); row.removeEventListener("pointercancel",onUp);
     try{ row.releasePointerCapture(pid); }catch(_){}
+    swiping=false;
     if(active) suppressClickUntil=Date.now()+400;
     const TH=80;
     const cur=()=>state.tasks.indexOf(task);     // 発火時点の現在の添字を解決
@@ -492,8 +502,52 @@ function deleteTaskUndoable(i){
   });
 }
 function mkBadge(text,cls){ const b=document.createElement("span"); b.className=cls; b.textContent=text; return b; }
+// ---- 繰り返し（完了で次回へ自動再生成） ----
+function nextOccurrence(repeat, from){
+  if(repeat==="daily") return addDays(from,1);
+  if(repeat==="weekly") return addDays(from,7);
+  if(repeat==="weekday"){ let d=addDays(from,1); while(d.getDay()===0||d.getDay()===6) d=addDays(d,1); return d; }
+  return from;
+}
+function shiftAlarmToDate(alarm, d){ const m=/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(alarm||"")); return m? (fmtDate(d)+" "+m[4]+":"+m[5]) : ""; }
+function rescheduleRecurring(t){
+  let base=today(); const bd=parseDate(t.due); if(bd && bd>base) base=bd;
+  const next=nextOccurrence(t.repeat, base);
+  t.due=fmtDate(next);
+  if(t.alarm){ const na=shiftAlarmToDate(t.alarm, next); if(na){ t.alarm=na; t.alarmFired=false; } }
+  t.done=false;
+}
+// ---- 作業時間タイマー ----
+function elapsedSeconds(t){ let e=parseFloat(t.elapsed)||0; if(t.running && t.runStart>0) e += (Date.now()-t.runStart)/1000; return e; }
+function fmtElapsed(sec){ sec=Math.max(0,Math.floor(sec)); const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60; return h>0? (h+":"+pad(m)+":"+pad(s)) : (pad(m)+":"+pad(s)); }
+function checkpointTimers(){ const now=Date.now(); state.tasks.forEach(t=>{ if(t.running && t.runStart>0){ t.elapsed=(parseFloat(t.elapsed)||0)+(now-t.runStart)/1000; t.runStart=now; } }); }
+function startTimer(t){ state.tasks.forEach(x=>{ if(x.running && x.runStart>0){ x.elapsed=(parseFloat(x.elapsed)||0)+(Date.now()-x.runStart)/1000; } x.running=false; x.runStart=0; }); t.running=true; t.runStart=Date.now(); save(); render(); }
+function stopTimer(t){ if(t.running && t.runStart>0){ t.elapsed=(parseFloat(t.elapsed)||0)+(Date.now()-t.runStart)/1000; } t.running=false; t.runStart=0; save(); render(); }
+// ---- アラーム（リマインダー通知） ----
+function alarmToInput(a){ const m=/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(a||"")); return m? (m[1]+"-"+m[2]+"-"+m[3]+"T"+m[4]+":"+m[5]) : ""; }
+function inputToAlarm(v){ const m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(v||"")); return m? (m[1]+"-"+m[2]+"-"+m[3]+" "+m[4]+":"+m[5]) : ""; }
+function parseAlarm(a){ const m=/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(a||"")); return m? new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5],0) : null; }
+function requestNotifyPermission(){ try{ if("Notification" in window && Notification.permission==="default") Notification.requestPermission(); }catch(e){} }
+function notifyHintIfBlocked(){ try{ if(!("Notification" in window)) toast("この端末は通知に非対応（アプリ内のお知らせで通知します）"); else if(Notification.permission==="denied") toast("通知はブロック中（ブラウザ設定で許可するとプッシュ通知できます）"); }catch(e){} }
+function fireAlarm(t){
+  try{ if("Notification" in window && Notification.permission==="granted"){ new Notification("⏰ "+(t.text||"タスク"), {body:"予定の時刻になりました", tag:"taskweb"}); } }catch(e){}
+  try{ toast("⏰ "+(t.text||"タスク")); }catch(e){}
+}
+function checkAlarms(){
+  const now=Date.now(); let changed=false;
+  for(const t of state.tasks){
+    if(t.done || t.alarmFired || !t.alarm) continue;
+    const d=parseAlarm(t.alarm); if(!d) continue;
+    if(d.getTime()<=now){ t.alarmFired=true; changed=true; fireAlarm(t); }
+  }
+  if(changed) save();
+  return changed;
+}
 function toggleDone(i){ const t=state.tasks[i]; if(!t) return;
-  if(!t.done){ t.done=true; recordCompletion(); } else { t.done=false; }
+  if(!t.done){
+    if(t.repeat){ rescheduleRecurring(t); recordCompletion(); toast("🔁 次回 "+t.due+" に繰り越しました"); }
+    else { t.done=true; recordCompletion(); }
+  } else { t.done=false; }
   save(); render(); }
 
 // ---- edit sheet ----
@@ -524,6 +578,19 @@ function buildEditSheet(){
   s.appendChild(chipRow(REPEATS.map(r=>({label:r.label,on:String(t.repeat||"")===r.key,fn:()=>{ t.repeat=r.key; commitEdit(); }}))));
   s.appendChild(label("☑ サブタスク ("+subDone(t)+"/"+(t.subs||[]).length+")"));
   s.appendChild(subEditor(t));
+  s.appendChild(label("⏰ アラーム（時刻になると通知）"));
+  const awrap=document.createElement("div"); awrap.style.cssText="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;";
+  const ai=document.createElement("input"); ai.type="datetime-local"; ai.style.maxWidth="220px"; ai.value=alarmToInput(t.alarm);
+  ai.onchange=()=>{ t.alarm=inputToAlarm(ai.value); t.alarmFired=false; if(t.alarm){ requestNotifyPermission(); notifyHintIfBlocked(); } commitEdit(); };
+  const ac=document.createElement("button"); ac.className="chip"; ac.textContent="なし"; ac.onclick=()=>{ t.alarm=""; t.alarmFired=false; commitEdit(); };
+  awrap.appendChild(ai); awrap.appendChild(ac); s.appendChild(awrap);
+  const tmLab=label("⏱ 作業時間"+(elapsedSeconds(t)>0||t.running?"："+fmtElapsed(elapsedSeconds(t)):"")); tmLab.id="tmLabel"; s.appendChild(tmLab);
+  const trow=document.createElement("div"); trow.className="chips";
+  const tbtn=document.createElement("button"); tbtn.className="chip"+(t.running?" on":""); tbtn.textContent=t.running?"■ 停止":"▶ 開始";
+  tbtn.onclick=()=>{ if(t.running) stopTimer(t); else startTimer(t); buildEditSheet(); }; trow.appendChild(tbtn);
+  if(elapsedSeconds(t)>0 && !t.running){ const rb=document.createElement("button"); rb.className="chip"; rb.textContent="リセット";
+    rb.onclick=()=>{ t.elapsed=0; t.running=false; t.runStart=0; commitEdit(); }; trow.appendChild(rb); }
+  s.appendChild(trow);
   // actions
   const act=document.createElement("div"); act.className="actions";
   act.appendChild(linkBtn("↑ 上へ",()=>{ moveTask(editIndex,-1); }));
@@ -602,12 +669,17 @@ function toast(msg, undoFn){
 
 // ---- CSV ----
 function csvEscape(v){ v=String(v==null?"":v); return '"'+v.replace(/"/g,'""')+'"'; }
+function repeatKey(v){ v=String(v||"").trim(); const r=REPEATS.find(x=>x.key===v||x.label===v); return r?r.key:""; }
+// サブタスクCSV符号化：各項目=先頭1文字フラグ(1=完了/0=未) + 本文、区切りはタブ。
+// 本文に | や ✓ が含まれても壊れない（フラグは必ず先頭1文字、区切りはタブ）。
+function subsToCsv(subs){ return (subs||[]).filter(s=>s&&s.text).map(s=>(s.done?"1":"0")+String(s.text)).join("\t"); }
+function subsFromCsv(str){ return String(str||"").split("\t").filter(x=>x.length>0).map(x=>{ const done=x.charAt(0)==="1"; return {text:x.slice(1),done:done}; }).filter(s=>s.text); }
 function exportCsv(){
-  const head=["text","done","cat","priority","due","estimate_min","tags","note"];
+  const head=["text","done","cat","priority","due","estimate_min","tags","note","repeat","subs"];
   const lines=[head.map(csvEscape).join(",")];
   for(const t of state.tasks){
     lines.push([t.text, (t.done?"True":"False"), catInfo(t.cat).label, prioInfo(t.priority).label,
-      t.due, (parseInt(t.estimate,10)||0), (t.tags||[]).join("|"), t.note].map(csvEscape).join(","));
+      t.due, (parseInt(t.estimate,10)||0), (t.tags||[]).join("|"), t.note, repeatLabel(t.repeat), subsToCsv(t.subs)].map(csvEscape).join(","));
   }
   download("tasks_"+stamp()+".csv", "﻿"+lines.join("\r\n")+"\r\n", "text/csv");
   toast("📤 CSVを書き出しました");
@@ -626,7 +698,8 @@ function importCsv(text){
   const rows=parseCsv(text); if(!rows.length){ toast("CSVを読めませんでした"); return; }
   const head=rows[0].map(h=>h.trim().toLowerCase()); const idx=(n)=>head.indexOf(n);
   const iText=idx("text"), iDone=idx("done"), iCat=idx("cat"), iPri=idx("priority"),
-        iDue=idx("due"), iEst=idx("estimate_min"), iTags=idx("tags"), iNote=idx("note");
+        iDue=idx("due"), iEst=idx("estimate_min"), iTags=idx("tags"), iNote=idx("note"),
+        iRepeat=idx("repeat"), iSubs=idx("subs");
   if(iText<0){ toast("CSVに text 列がありません"); return; }
   const exist=new Set(state.tasks.map(t=>t.text)); let n=0;
   for(let r=1;r<rows.length;r++){ const c=rows[r]; const text=(c[iText]||"").trim(); if(!text) continue;
@@ -637,6 +710,8 @@ function importCsv(text){
     if(iEst>=0&&c[iEst]) t.estimate=parseInt(c[iEst],10)||0;
     if(iTags>=0&&c[iTags]) t.tags=String(c[iTags]).split(/[|\r\n]+/).map(s=>s.trim()).filter(Boolean);
     if(iNote>=0) t.note=String(c[iNote]||"");
+    if(iRepeat>=0&&c[iRepeat]) t.repeat=repeatKey(c[iRepeat]);
+    if(iSubs>=0&&c[iSubs]) t.subs=subsFromCsv(c[iSubs]);
     if(iDone>=0&&/^(?:true|1|yes|y|done|x|✓|○|はい|済|完了?)$/i.test(String(c[iDone]).trim())) t.done=true;
     state.tasks.push(t); exist.add(text); n++;
   }
@@ -837,6 +912,15 @@ function renderCloud(){
 
 // ---- init ----
 applyTheme(getTheme()); load(); wire(); render(); Cloud.init();
+// 1秒ごと：アラーム発火チェック＋計測中タスクの表示更新
+setInterval(function(){
+  let fired=false; try{ fired=checkAlarms(); }catch(e){}
+  const anyRunning=state.tasks.some(t=>t.running);
+  if((fired || anyRunning) && !dragging && !swiping){ try{ renderList(); }catch(e){} }
+  // 編集シートを開いたまま計測中なら、タイマー表示だけ毎秒更新（シート全体は作り直さない）
+  if(editIndex>=0){ const t=state.tasks[editIndex]; const lab=document.getElementById("tmLabel");
+    if(t && t.running && lab){ try{ lab.textContent="⏱ 作業時間："+fmtElapsed(elapsedSeconds(t)); }catch(e){} } }
+}, 1000);
 // オフライン対応＆ホーム画面アプリ化（http/https のみ。file:// では登録しない）
 if("serviceWorker" in navigator && /^https?:$/.test(location.protocol)){
   window.addEventListener("load",function(){ navigator.serviceWorker.register("sw.js").catch(function(){}); });

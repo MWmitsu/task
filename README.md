@@ -20,6 +20,9 @@ Windows常駐ウィジェットと**同じ感覚で使えるタスク管理**を
 - 締切が今日・期限切れは「今日」タブに集約（Windows版と同じ挙動）
 - 📍優先度（低／中／高）・🏷タグ（タップでそのタグを検索）・📐見積もり・📝備考
 - 🔁繰り返し（毎日／平日／毎週）・☑サブタスク（進捗バッジ付き）・締切は**カレンダー入力**でも指定可
+- **🔁 繰り返しの自動再生成**：繰り返しタスクを完了すると、次回の締切に自動で繰り越し（連続記録にもカウント）
+- **⏰ リマインダー通知**：編集でアラーム時刻を設定すると、その時刻にブラウザ通知＋トースト（初回に通知の許可を確認）
+- **⏱ 作業時間タイマー**：編集で ▶開始／■停止。経過時間を行にバッジ表示（アプリを閉じていた時間は数えません）
 - 完了（取り消し線）・今日の完了数＆連続日数（🔥）
 - 検索・一時メモ・並べ替え・複製・完了を隠す/消す
 - **👆 スワイプ操作**：右スワイプで完了／左スワイプで削除（削除は数秒間「タップで取り消し」可）
@@ -54,7 +57,7 @@ Windows常駐ウィジェットと**同じ感覚で使えるタスク管理**を
 - PWA用に同じフォルダへ `manifest.webmanifest`・`sw.js`（Service Worker）・`icon-180.png`・`icon-512.png` を同梱
   - Service Workerは**同一オリジンのアプリ本体だけ**をキャッシュ（オフライン起動用）。Firebase等の別オリジン通信は一切触らず同期を壊さない設計
   - キャッシュを更新したいときは `sw.js` の `CACHE` 名（例 `taskweb-v2`）を上げる
-- CSVは Windows版 `Export-Tasks-Csv` と同じ列順（text,done,cat,priority,due,estimate_min,tags,note）・タグは `|` 区切り・先頭にBOM。引用符内の改行も保持
+- CSVは Windows版 `Export-Tasks-Csv` と同じ列順（text,done,cat,priority,due,estimate_min,tags,note,**repeat,subs**）・タグは `|` 区切り・先頭にBOM。引用符内の改行も保持。**繰り返し**はラベル（なし/毎日/平日/毎週）、**サブタスク**はタブ区切り＋各項目の先頭1文字が完了フラグ（1=完了/0=未、例 `1牛乳⇥0パン`）で本文に `|` や `✓` が含まれても壊れません — Windows版と相互運用可。旧列だけのCSVも取り込み可
 - JSON取り込みは Web版の書き出しと Windows版 `widget-data.json` の両方を受け付け（分類はキー/ラベルどちらも解釈）。`hideDone`（完了を隠す）も往復
 - ローカル確認用サーバ：`powershell -ExecutionPolicy Bypass -File serve.ps1 -Port 8190`（iPadで使うだけなら不要）
 - デプロイ：このフォルダが GitHub リポジトリ `MWmitsu/task` のソース。`git add -A && git commit && git push` で https://mwmitsu.github.io/task/ に反映（Pagesビルド後、CDNの404キャッシュが数分残ることがある）
