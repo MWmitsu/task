@@ -71,6 +71,25 @@
   .alarm-btns{display:flex; gap:6px; flex-wrap:wrap;}
   @keyframes celebratePulse{0%{box-shadow:0 0 0 0 var(--accent);}60%{box-shadow:0 0 0 10px transparent;}100%{box-shadow:0 0 0 0 transparent;}}
   .wrap.celebrate{animation:celebratePulse .9s ease;}
+  .cal-head{display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;}
+  .cal-title{font-size:15px; font-weight:700; color:var(--text);}
+  .cal-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:3px;}
+  .cal-wd{text-align:center; font-size:11px; color:var(--sub); padding:2px 0;}
+  .cal-wd.sun{color:var(--now);} .cal-wd.sat{color:var(--blue);}
+  .cal-cell{position:relative; min-height:42px; border-radius:8px; background:var(--panel); padding:3px 2px; cursor:pointer; display:flex; flex-direction:column; align-items:center;}
+  .cal-cell.empty{background:transparent; cursor:default;}
+  .cal-cell.today{outline:2px solid var(--accent);}
+  .cal-cell.sel{background:var(--panel2); outline:2px solid var(--blue);}
+  .cal-num{font-size:12px; color:var(--text);}
+  .cal-cell.sun .cal-num{color:var(--now);} .cal-cell.sat .cal-num{color:var(--blue);}
+  .cal-due{margin-top:2px; min-width:18px; height:16px; border-radius:8px; background:var(--accent); color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center; padding:0 4px;}
+  .cal-done{margin-top:2px; font-size:11px; color:var(--green);}
+  .cal-item{padding:9px 8px; border-radius:9px; background:var(--panel); margin:4px 0; font-size:14px; cursor:pointer; word-break:break-word;}
+  .cal-item.done{text-decoration:line-through; color:var(--sub);}
+  .hist-item{display:flex; align-items:baseline; gap:8px; padding:5px 4px; font-size:13px; border-bottom:1px solid var(--line);}
+  .hist-time{flex:none; width:42px; color:var(--sub); font-size:11px;}
+  .hist-text{flex:1; min-width:0; color:var(--text); word-break:break-word;}
+  .hist-min{flex:none; color:var(--sub); font-size:11px;}
   .row{display:flex; gap:8px; align-items:flex-start;}
   textarea,input[type=text]{width:100%; background:var(--panel); border:1px solid var(--line); border-radius:12px;
     color:var(--text); font-size:16px; padding:11px 12px; resize:none; outline:none;}
@@ -191,8 +210,10 @@
 
   <div class="foot">
     <div class="stat" id="stat"></div>
+    <button class="linkbtn" id="btnCalendar" style="display:none">📅 カレンダー</button>
     <button class="linkbtn" id="btnReport" style="display:none">📋 日報</button>
     <button class="linkbtn" id="btnGraph" style="display:none">📊 グラフ</button>
+    <button class="linkbtn" id="btnHistory" style="display:none">🗂 履歴</button>
     <button class="linkbtn" id="btnSpeak" style="display:none">🔊 読み上げ</button>
     <button class="linkbtn" id="btnHideDone">👁 完了を隠す</button>
     <button class="linkbtn" id="btnClearDone">✓ 完了を消す</button>
@@ -263,6 +284,22 @@
     <div class="actions" style="margin-top:14px"><button class="linkbtn" id="graphClose">閉じる</button></div>
   </div>
 </div>
+<!-- カレンダーシート -->
+<div class="ov" id="calOv">
+  <div class="sheet">
+    <h2>📅 カレンダー</h2>
+    <div id="calBody"></div>
+    <div class="actions" style="margin-top:14px"><button class="linkbtn" id="calClose">閉じる</button></div>
+  </div>
+</div>
+<!-- 履歴シート -->
+<div class="ov" id="histOv">
+  <div class="sheet">
+    <h2>🗂 完了の履歴</h2>
+    <div id="histBody"></div>
+    <div class="actions" style="margin-top:14px"><button class="linkbtn" id="histClose">閉じる</button></div>
+  </div>
+</div>
 <!-- アラーム（スヌーズ）バナー -->
 <div class="alarm-banner" id="alarmBanner">
   <div class="alarm-text" id="alarmText">⏰</div>
@@ -296,7 +333,26 @@ const DUE_PRESETS = ()=>{ const t=new Date(); const f=(n)=>fmtDate(addDays(t,n))
   return [{l:"なし",v:""},{l:"今日",v:f(0)},{l:"明日",v:f(1)},{l:"+3日",v:f(3)},{l:"+1週",v:f(7)}]; };
 const EST_PRESETS = [{l:"なし",v:0},{l:"15分",v:15},{l:"30分",v:30},{l:"1時間",v:60},{l:"2時間",v:120},{l:"4時間",v:240},{l:"8時間",v:480}];
 const REPEATS = [{key:"",label:"なし"},{key:"daily",label:"毎日"},{key:"weekday",label:"平日"},{key:"weekly",label:"毎週"}];
-function repeatLabel(k){ const r=REPEATS.find(x=>x.key===k); return r?r.label:"なし"; }
+const WD_NAMES = ["日","月","火","水","木","金","土"];
+function repeatLabel(k){
+  k=String(k||""); const r=REPEATS.find(x=>x.key===k); if(r) return r.label;
+  let m;
+  if(m=/^weekdays:([0-6](?:,[0-6])*)$/.exec(k)) return "毎週"+m[1].split(",").map(n=>WD_NAMES[+n]).join("");
+  if(m=/^everyN:(\d+)$/.exec(k)) return m[1]+"日ごと";
+  if(m=/^monthly:(\d{1,2})$/.exec(k)) return "毎月"+m[1]+"日";
+  return "なし";
+}
+function repeatKey(v){
+  v=String(v||"").trim(); const r=REPEATS.find(x=>x.key===v||x.label===v); if(r) return r.key;
+  let m;
+  if(/^weekdays:[0-6](,[0-6])*$/.test(v)) return v;                 // 生キー
+  if(m=/^everyN:(\d+)$/.exec(v)) return (+m[1]>0)? v : "";          // 0は無効
+  if(m=/^monthly:(\d{1,2})$/.exec(v)) return (+m[1]>=1&&+m[1]<=31)? v : "";
+  if(m=/^毎週([日月火水木金土]+)$/.exec(v)){ const days=[]; for(const ch of m[1]){ const idx=WD_NAMES.indexOf(ch); if(idx>=0&&days.indexOf(idx)<0) days.push(idx); } if(days.length) return "weekdays:"+days.sort((a,b)=>a-b).join(","); }
+  if(m=/^(\d+)日ごと$/.exec(v)) return (+m[1]>0)? "everyN:"+m[1] : "";
+  if(m=/^毎月(\d{1,2})日$/.exec(v)) return (+m[1]>=1&&+m[1]<=31)? "monthly:"+m[1] : "";
+  return "";
+}
 function subDone(t){ return (t.subs||[]).filter(s=>s.done).length; }
 
 // ---- state ----
@@ -599,9 +655,22 @@ function deleteTaskUndoable(i){
 function mkBadge(text,cls){ const b=document.createElement("span"); b.className=cls; b.textContent=text; return b; }
 // ---- 繰り返し（完了で次回へ自動再生成） ----
 function nextOccurrence(repeat, from){
+  repeat=String(repeat||"");
   if(repeat==="daily") return addDays(from,1);
   if(repeat==="weekly") return addDays(from,7);
   if(repeat==="weekday"){ let d=addDays(from,1); while(d.getDay()===0||d.getDay()===6) d=addDays(d,1); return d; }
+  let m;
+  if(m=/^weekdays:([0-6](?:,[0-6])*)$/.exec(repeat)){ const days=m[1].split(",").map(Number); let d=addDays(from,1); for(let i=0;i<14;i++){ if(days.indexOf(d.getDay())>=0) return d; d=addDays(d,1); } return d; }
+  if(m=/^everyN:(\d+)$/.exec(repeat)){ return addDays(from, Math.max(1,+m[1])); }
+  if(m=/^monthly:(\d{1,2})$/.exec(repeat)){ const day=Math.max(1,Math.min(31,+m[1]));
+    let y=from.getFullYear(), mo=from.getMonth();
+    for(let i=0;i<2;i++){   // 当月→翌月の順に、from より後の日付を採用（月末日でクランプ）
+      const dim=new Date(y, mo+1, 0).getDate(); const dt=new Date(y, mo, Math.min(day,dim));
+      if(dt>from) return dt;
+      mo++; if(mo>11){ mo=0; y++; }
+    }
+    const dim2=new Date(y, mo+1, 0).getDate(); return new Date(y, mo, Math.min(day,dim2));
+  }
   return from;
 }
 function shiftAlarmToDate(alarm, d){ const m=/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(alarm||"")); return m? (fmtDate(d)+" "+m[4]+":"+m[5]) : ""; }
@@ -678,8 +747,8 @@ function buildEditSheet(){
   di.onchange=()=>{ t.due=di.value; commitEdit(); }; dwrap.appendChild(di); s.appendChild(dwrap);
   s.appendChild(label("📐 見積もり"+(parseInt(t.estimate,10)>0?"："+estLabel(t.estimate):"")));
   s.appendChild(chipRow(EST_PRESETS.map(e=>({label:e.l,on:(parseInt(t.estimate,10)||0)===e.v,fn:()=>{ t.estimate=e.v; commitEdit(); }}))));
-  s.appendChild(label("🔁 繰り返し"));
-  s.appendChild(chipRow(REPEATS.map(r=>({label:r.label,on:String(t.repeat||"")===r.key,fn:()=>{ t.repeat=r.key; commitEdit(); }}))));
+  s.appendChild(label("🔁 繰り返し"+(t.repeat?"："+repeatLabel(t.repeat):"")));
+  s.appendChild(repeatEditor(t));
   s.appendChild(label("☑ サブタスク ("+subDone(t)+"/"+(t.subs||[]).length+")"));
   s.appendChild(subEditor(t));
   s.appendChild(label("⏰ アラーム（時刻になると通知）"));
@@ -724,6 +793,29 @@ function tagEditor(t){
   inp.onkeydown=(e)=>{ if(e.key==="Enter"){ e.preventDefault(); add(); } };
   const ab=document.createElement("button"); ab.className="add"; ab.style.fontSize="18px"; ab.style.minWidth="44px"; ab.textContent="＋"; ab.onclick=add;
   r.appendChild(inp); r.appendChild(ab); box.appendChild(r);
+  return box;
+}
+function repeatWeekdays(t){ const m=/^weekdays:([0-6](?:,[0-6])*)$/.exec(String(t.repeat||"")); return m? m[1].split(",").map(Number):[]; }
+function repeatEditor(t){
+  const box=document.createElement("div");
+  box.appendChild(chipRow(REPEATS.map(r=>({label:r.label,on:String(t.repeat||"")===r.key,fn:()=>{ t.repeat=r.key; commitEdit(); }}))));
+  // 曜日選択（毎週○曜）
+  const wrow=document.createElement("div"); wrow.className="chips"; wrow.style.marginTop="6px";
+  WD_NAMES.forEach((nm,idx)=>{ const sel=repeatWeekdays(t).indexOf(idx)>=0; const b=document.createElement("button"); b.className="chip"+(sel?" on":""); b.textContent=nm;
+    b.onclick=()=>{ const cur=repeatWeekdays(t); const p=cur.indexOf(idx); if(p>=0) cur.splice(p,1); else cur.push(idx);
+      t.repeat=cur.length?("weekdays:"+cur.sort((a,b)=>a-b).join(",")):""; commitEdit(); };
+    wrow.appendChild(b); });
+  box.appendChild(wrow);
+  // N日ごと / 毎月◯日
+  const arow=document.createElement("div"); arow.className="chips"; arow.style.marginTop="6px";
+  const everyOn=/^everyN:/.test(String(t.repeat||"")), monOn=/^monthly:/.test(String(t.repeat||""));
+  const eb=document.createElement("button"); eb.className="chip"+(everyOn?" on":""); eb.textContent=everyOn?repeatLabel(t.repeat):"N日ごと…";
+  eb.onclick=()=>{ const cur=(/^everyN:(\d+)$/.exec(String(t.repeat||""))||[])[1]||"3"; const v=prompt("何日ごと？（数字）", cur); if(v===null) return; const n=parseInt(v,10); if(n>0){ t.repeat="everyN:"+n; commitEdit(); } else toast("1以上の数字で"); };
+  arow.appendChild(eb);
+  const mb=document.createElement("button"); mb.className="chip"+(monOn?" on":""); mb.textContent=monOn?repeatLabel(t.repeat):"毎月◯日…";
+  mb.onclick=()=>{ const cur=(/^monthly:(\d+)$/.exec(String(t.repeat||""))||[])[1]||"1"; const v=prompt("毎月何日？（1〜31）", cur); if(v===null) return; const n=parseInt(v,10); if(n>=1&&n<=31){ t.repeat="monthly:"+n; commitEdit(); } else toast("1〜31の数字で"); };
+  arow.appendChild(mb);
+  box.appendChild(arow);
   return box;
 }
 function subEditor(t){
@@ -774,7 +866,7 @@ function toast(msg, undoFn){
 
 // ---- CSV ----
 function csvEscape(v){ v=String(v==null?"":v); return '"'+v.replace(/"/g,'""')+'"'; }
-function repeatKey(v){ v=String(v||"").trim(); const r=REPEATS.find(x=>x.key===v||x.label===v); return r?r.key:""; }
+// repeatKey は繰り返し定義（上部）を使用（基本＋詳細：毎週曜日/N日ごと/毎月N日）
 // サブタスクCSV符号化：各項目=先頭1文字フラグ(1=完了/0=未) + 本文、区切りはタブ。
 // 本文に | や ✓ が含まれても壊れない（フラグは必ず先頭1文字、区切りはタブ）。
 function subsToCsv(subs){ return (subs||[]).filter(s=>s&&s.text).map(s=>(s.done?"1":"0")+String(s.text)).join("\t"); }
@@ -862,6 +954,8 @@ const SETTING_DEFS = [
   {key:"speak",      label:"🔊 読み上げボタン",   group:"機能", def:false, desc:"未完了タスクを音声で読み上げます。"},
   {key:"voice",      label:"🎤 音声入力ボタン",   group:"機能", def:false, desc:"マイクで話してタスクを入力します（対応ブラウザのみ）。"},
   {key:"graph",      label:"📊 グラフ・傾向ボタン", group:"機能", def:false, desc:"完了の推移と傾向（時間帯・分類・見積精度）を表示します。"},
+  {key:"calendar",   label:"📅 カレンダー表示",     group:"機能", def:false, desc:"締切を月カレンダーで俯瞰。日を選ぶとその日のタスクを表示します。"},
+  {key:"history",    label:"🗂 完了の履歴",         group:"機能", def:false, desc:"完了したタスクの履歴（日付・時刻・作業時間）を一覧します。"},
   {key:"templates",  label:"🧩 テンプレート",       group:"機能", def:false, desc:"新規タスクの既定値（分類・優先度・タグ・見積）をテンプレ化します。"},
   {key:"autotab",    label:"⏰ 時間帯で自動タブ切替", group:"動作", def:false, desc:"朝は「今日」昼は「すぐ」など時間帯で表示タブを自動で切り替えます。"},
   {key:"celebrate",  label:"🎉 達成のお祝い",       group:"動作", def:false, desc:"連続記録や累計の節目でお祝いを表示します。"},
@@ -877,6 +971,8 @@ function applySettings(){
     showHideBtn("btnVoice", getSetting("voice"));
     showHideBtn("btnReport", getSetting("report"));
     showHideBtn("btnGraph", getSetting("graph"));
+    showHideBtn("btnCalendar", getSetting("calendar"));
+    showHideBtn("btnHistory", getSetting("history"));
     applyAttendanceUI();
     applyTemplates();
   }catch(e){}
@@ -1037,6 +1133,57 @@ function buildInsights(days){
   wrap.appendChild(info); return wrap;
 }
 
+// ==== カレンダー表示 ====
+let calYear=0, calMonth=0, calSelected="";
+function openCalendar(){ const t=today(); calYear=t.getFullYear(); calMonth=t.getMonth(); calSelected=""; buildCalendar(); el("calOv").classList.add("show"); syncModalLock(); }
+function dueCountByDay(y,mo){ const map={}; state.tasks.forEach(t=>{ const d=parseDate(t.due); if(!d||d.getFullYear()!==y||d.getMonth()!==mo) return; const k=fmtDate(d); if(!map[k]) map[k]={due:0,done:0}; if(t.done) map[k].done++; else map[k].due++; }); return map; }
+function buildCalendar(){
+  const body=el("calBody"); if(!body) return; body.innerHTML="";
+  const hd=document.createElement("div"); hd.className="cal-head";
+  const prev=document.createElement("button"); prev.className="chip"; prev.textContent="‹"; prev.setAttribute("aria-label","前の月"); prev.onclick=()=>{ calMonth--; if(calMonth<0){ calMonth=11; calYear--; } calSelected=""; buildCalendar(); };
+  const next=document.createElement("button"); next.className="chip"; next.textContent="›"; next.setAttribute("aria-label","次の月"); next.onclick=()=>{ calMonth++; if(calMonth>11){ calMonth=0; calYear++; } calSelected=""; buildCalendar(); };
+  const title=document.createElement("div"); title.className="cal-title"; title.textContent=calYear+"年"+(calMonth+1)+"月";
+  hd.appendChild(prev); hd.appendChild(title); hd.appendChild(next); body.appendChild(hd);
+  const grid=document.createElement("div"); grid.className="cal-grid";
+  WD_NAMES.forEach((nm,idx)=>{ const c=document.createElement("div"); c.className="cal-wd"+(idx===0?" sun":idx===6?" sat":""); c.textContent=nm; grid.appendChild(c); });
+  const startWd=new Date(calYear,calMonth,1).getDay(); const dim=new Date(calYear,calMonth+1,0).getDate();
+  const todayK=todayStr(); const counts=dueCountByDay(calYear,calMonth);
+  for(let i=0;i<startWd;i++){ const c=document.createElement("div"); c.className="cal-cell empty"; grid.appendChild(c); }
+  for(let d=1;d<=dim;d++){ const dateObj=new Date(calYear,calMonth,d); const k=fmtDate(dateObj); const wd=dateObj.getDay();
+    const c=document.createElement("div"); c.className="cal-cell"+(k===todayK?" today":"")+(k===calSelected?" sel":"")+(wd===0?" sun":"")+(wd===6?" sat":"");
+    const num=document.createElement("div"); num.className="cal-num"; num.textContent=d; c.appendChild(num);
+    const cnt=counts[k]; if(cnt){ if(cnt.due>0){ const b=document.createElement("div"); b.className="cal-due"; b.textContent=cnt.due; c.appendChild(b); } else if(cnt.done>0){ const b=document.createElement("div"); b.className="cal-done"; b.textContent="✓"; c.appendChild(b); } }
+    c.onclick=()=>{ calSelected=k; buildCalendar(); }; grid.appendChild(c);
+  }
+  body.appendChild(grid);
+  if(calSelected){ const list=document.createElement("div"); list.style.marginTop="10px";
+    const hdr=document.createElement("div"); hdr.className="setgroup"; hdr.textContent=calSelected+" のタスク"; list.appendChild(hdr);
+    const items=state.tasks.filter(t=>String(t.due)===calSelected);
+    if(!items.length){ const e=document.createElement("div"); e.className="help"; e.textContent="締切のタスクはありません。"; list.appendChild(e); }
+    items.forEach(t=>{ const gi=state.tasks.indexOf(t); const r=document.createElement("div"); r.className="cal-item"+(t.done?" done":""); r.textContent=(t.done?"✓ ":"・ ")+t.text;
+      r.onclick=()=>{ el("calOv").classList.remove("show"); openEdit(gi); }; list.appendChild(r); });   // openEdit が syncModalLock を呼ぶ
+    body.appendChild(list);
+  } else { const tip=document.createElement("div"); tip.className="help"; tip.style.marginTop="8px"; tip.textContent="日をタップするとその日の締切タスクを表示します。数字＝未完了の件数。"; body.appendChild(tip); }
+}
+
+// ==== 完了の履歴・アーカイブ ====
+function openHistory(){ buildHistory(); el("histOv").classList.add("show"); syncModalLock(); }
+function buildHistory(){
+  const body=el("histBody"); if(!body) return; body.innerHTML="";
+  const log=(state.completionLog||[]).slice().sort((a,b)=>(((a.date||"")+(a.time||"")) < ((b.date||"")+(b.time||"")) ? 1 : -1));  // 新しい順（各日付内も新しい順）
+  if(!log.length){ const e=document.createElement("div"); e.className="help"; e.textContent="完了の履歴はまだありません。タスクを完了すると記録されます。"; body.appendChild(e); return; }
+  const byDate={}; log.forEach(e=>{ (byDate[e.date]=byDate[e.date]||[]).push(e); });
+  Object.keys(byDate).sort((a,b)=>a<b?1:-1).forEach(date=>{
+    const ents=byDate[date]; let sum=0; ents.forEach(x=>sum+=parseInt(x.min,10)||0);
+    const h=document.createElement("div"); h.className="setgroup"; h.textContent=date+"（"+ents.length+"件"+(sum>0?" / "+estLabel(sum):"")+"）"; body.appendChild(h);
+    ents.forEach(e=>{ const r=document.createElement("div"); r.className="hist-item";
+      const tm=document.createElement("span"); tm.className="hist-time"; tm.textContent=e.time||"";
+      const tx=document.createElement("span"); tx.className="hist-text"; tx.textContent="✓ "+e.text;
+      const mn=document.createElement("span"); mn.className="hist-min"; mn.textContent=(parseInt(e.min,10)>0)?("⏱"+estLabel(e.min)):"";
+      r.appendChild(tm); r.appendChild(tx); r.appendChild(mn); body.appendChild(r); });
+  });
+}
+
 // ==== テンプレート（新規タスクの既定値） ====
 function applyTemplate(t){
   if(!state.activeTemplate) return; const tpl=(state.templates||[]).find(x=>x.name===state.activeTemplate); if(!tpl) return;
@@ -1117,10 +1264,10 @@ function showHelp(){
     "<b>編集</b>：タスクをタップ→分類・優先度・タグ・締切・見積・複製・削除",
     "<b>タグ</b>：#タグをタップでそのタグを検索",
     "<b>完了</b>：左の□をタップ／右スワイプ。今日の完了数と連続日数を下に表示",
-    "<b>編集の詳細</b>：🔁繰り返し（完了で次回へ自動繰越）・⏰アラーム（通知＋スヌーズ）・⏱作業タイマー・☑サブタスク",
-    "<b>並べ替え/操作</b>：↕並び順、🖱ドラッグ、左スワイプで削除（取り消し可）",
-    "<b>⚙ 設定</b>：機能のオン/オフ（説明つき）。🕘出退勤・休憩／📋日報／📊グラフ・傾向／🔊読み上げ／🎤音声入力／🧩テンプレート／⏰時間帯で自動タブ／🎉お祝い",
-    "<b>📊 グラフ</b>：週間/月間の完了推移、傾向（時間帯・分類・見積精度）",
+    "<b>編集の詳細</b>：🔁繰り返し（毎日/平日/毎週/<b>毎週○曜・N日ごと・毎月◯日</b>、完了で次回へ自動繰越）・⏰アラーム（通知＋スヌーズ）・⏱作業タイマー・☑サブタスク",
+    "<b>並べ替え/操作</b>：↕並び順、🖱ドラッグ（行の長押しでも）、左スワイプで削除（取り消し可）",
+    "<b>⚙ 設定</b>：機能のオン/オフ（説明つき）。🕘出退勤・休憩／📋日報／📊グラフ／📅カレンダー／🗂履歴／🔊読み上げ／🎤音声入力／🧩テンプレート／⏰自動タブ／🎉お祝い",
+    "<b>📅 カレンダー</b>：締切を月で俯瞰、日を選ぶとその日のタスク／<b>🗂 履歴</b>：完了の記録を日付ごとに一覧",
     "<b>データ</b>：右上 ⇅ から、Windows版とCSV/JSONでやり取り・🗄自動バックアップから復元。Googleログインで端末間同期",
     "<b>🌙テーマ</b>：右上で ライト/ダーク。<b>ホーム画面に追加</b>：共有 → 「ホーム画面に追加」でアプリのように",
   ].map(s=>"・"+s).join("<br>");
@@ -1174,6 +1321,12 @@ function wire(){
   el("btnGraph").onclick=openGraph;
   el("graphClose").onclick=()=>{ el("graphOv").classList.remove("show"); syncModalLock(); };
   el("graphOv").onclick=(e)=>{ if(e.target.id==="graphOv"){ el("graphOv").classList.remove("show"); syncModalLock(); } };
+  el("btnCalendar").onclick=openCalendar;
+  el("calClose").onclick=()=>{ el("calOv").classList.remove("show"); syncModalLock(); };
+  el("calOv").onclick=(e)=>{ if(e.target.id==="calOv"){ el("calOv").classList.remove("show"); syncModalLock(); } };
+  el("btnHistory").onclick=openHistory;
+  el("histClose").onclick=()=>{ el("histOv").classList.remove("show"); syncModalLock(); };
+  el("histOv").onclick=(e)=>{ if(e.target.id==="histOv"){ el("histOv").classList.remove("show"); syncModalLock(); } };
   el("restoreBackup").onclick=restoreLatestBackup;
   warmVoices();
   el("expCsv").onclick=exportCsv; el("expJson").onclick=exportJson;
