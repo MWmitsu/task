@@ -235,8 +235,18 @@
         Googleでログインすると、複数の端末（iPad・PCのブラウザ）で<b>自動的に同期</b>されます。
       </div>
     </div>
+    <div class="help" style="margin:14px 0 8px"><b>🔄 Windows版と同期（ファイル経由）</b></div>
+    <div class="actions" style="margin-top:4px">
+      <button class="linkbtn" id="syncImport">📥 同期ファイルを取り込み（widgetから）</button>
+      <button class="linkbtn" id="syncExport">📤 同期ファイルを書き出し（widgetへ）</button>
+    </div>
+    <div class="help" style="margin-top:8px; font-size:11.5px; color:var(--dim)">
+      Windows版は保存のたび <b>taskweb-sync.json</b> をフォルダ（OneDrive）へ自動書き出し・起動時に自動取り込みします。<br>
+      ・<b>widget→Web</b>：「📥 取り込み」でそのファイルを選択（重複はマージ）<br>
+      ・<b>Web→widget</b>：「📤 書き出し」した taskweb-sync.json を Windows版のフォルダへ置く（次回起動で取り込み）
+    </div>
     <div class="help" style="margin:14px 0 10px">
-      ファイルでのやり取り（Windows常駐版との橋渡し・バックアップ）：
+      その他のファイル操作（バックアップ・CSV）：
     </div>
     <div class="actions" style="margin-top:4px">
       <button class="linkbtn" id="expJson">📤 JSON書き出し（バックアップ）</button>
@@ -920,6 +930,12 @@ function exportJson(){
   download("taskweb_"+stamp()+".json", JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones},null,2), "application/json");
   toast("📤 JSONを書き出しました");
 }
+function exportSyncFile(){
+  // Windows版と共有する同期ファイル（タスク中心。設定/テンプレ等のUI設定は含めない）
+  const doc={ _source:"web", _updatedAt:new Date().toISOString(), tasks:state.tasks, completions:state.completions, memo:state.memo, attendance:state.attendance, completionLog:state.completionLog };
+  download("taskweb-sync.json", JSON.stringify(doc,null,2), "application/json");
+  toast("📤 taskweb-sync.json を書き出しました（Windows版のフォルダへ）");
+}
 function importJson(text){
   let o; try{ o=JSON.parse(text.replace(/^﻿/,"")); }catch(e){ toast("JSONを読めませんでした"); return; }
   const arr = Array.isArray(o)? o : (o.tasks||[]);
@@ -933,7 +949,7 @@ function importJson(text){
   if(o && o.settings && typeof o.settings==="object"){ for(const k in o.settings){ if(!(k in state.settings)) state.settings[k]=o.settings[k]; } }
   if(o && Array.isArray(o.templates)){ const names=new Set(state.templates.map(t=>t.name)); o.templates.forEach(tpl=>{ if(tpl&&tpl.name&&!names.has(tpl.name)){ state.templates.push(tpl); names.add(tpl.name); } }); }
   if(o && Array.isArray(o.milestones)) state.milestones=Array.from(new Set(state.milestones.concat(o.milestones)));
-  if(o && typeof o.activeTemplate==="string" && o.activeTemplate) state.activeTemplate=o.activeTemplate;
+  if(o && typeof o.activeTemplate==="string" && o.activeTemplate && (state.templates||[]).some(t=>t.name===o.activeTemplate)) state.activeTemplate=o.activeTemplate;
   el("memo").value=state.memo; save(); applySettings(); try{ checkMilestones(); }catch(e){} render(); toast("📥 "+n+" 件を取り込みました");
 }
 function stamp(){ const d=new Date(); return d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+"_"+pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds()); }
@@ -1330,6 +1346,7 @@ function wire(){
   el("restoreBackup").onclick=restoreLatestBackup;
   warmVoices();
   el("expCsv").onclick=exportCsv; el("expJson").onclick=exportJson;
+  el("syncExport").onclick=exportSyncFile; el("syncImport").onclick=()=>pickFile("json");
   el("impCsv").onclick=()=>pickFile("csv"); el("impJson").onclick=()=>pickFile("json");
   el("filePick").addEventListener("change",function(){
     const f=this.files[0]; if(!f) return; const reader=new FileReader();
