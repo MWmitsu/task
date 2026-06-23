@@ -20,7 +20,7 @@
   }
   html[data-theme="light"]{
     --bg:#ffffff; --bg2:#f4f1fb; --panel:#efeaf9; --panel2:#e4ddf3;
-    --text:#1c1530; --sub:#5b5482; --dim:#8b83b0; --line:#1a132220;
+    --text:#1c1530; --sub:#5b5482; --dim:#6f6796; --line:#1a132220;
     --accent:#e0483c; --now:#e23b33; --normal:#b08a1e; --any:#2f9e54;
     --blue:#3f7fc0; --orange:#c77a2a; --green:#2f9e54;
   }
@@ -34,7 +34,7 @@
   h1{font-size:18px; margin:6px 2px 12px; color:var(--accent); display:flex; align-items:center; gap:8px;}
   h1 .sp{flex:1;}
   button{font-family:inherit; cursor:pointer; border:none; border-radius:10px; color:var(--text);}
-  .icon{background:transparent; color:var(--sub); font-size:18px; padding:6px 9px; border-radius:9px;}
+  .icon{background:transparent; color:var(--sub); font-size:18px; padding:7px 9px; border-radius:9px; min-width:40px; min-height:38px;}
   .icon:active{background:var(--panel);}
   .icon.on{color:var(--accent); background:var(--panel);}
   .attbar{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:8px 0 2px; padding:8px 10px; background:var(--panel); border-radius:10px;}
@@ -117,6 +117,7 @@
   html[data-theme="light"] .b.pri-low{background:#3f7fc022; color:#2a5c93;}
   html[data-theme="light"] .b.tag{background:#7a6fb02e; color:#4b3f8f;}
   html[data-theme="light"] .b.run{background:#2f9e5422; color:#1d6e39;}
+  html[data-theme="light"] .tagchip{background:#7a6fb026; color:#4b3f8f;}
   html[data-theme="light"] .b.note{color:#5b5482;}
   html[data-theme="light"] .task.is-done .ttext{color:#9a93b8;}
   html[data-theme="light"] .task:active{background:#1a132208;}
@@ -161,17 +162,17 @@
 <body>
 <div class="wrap">
   <h1>📌 やること<span class="sub" id="ver" style="font-size:11px;color:var(--dim);font-weight:400"></span><span class="sp"></span>
-    <button class="icon" id="btnSort" title="並び順">↕</button>
-    <button class="icon" id="btnTheme" title="テーマ">🌙</button>
-    <button class="icon" id="btnSettings" title="設定">⚙</button>
-    <button class="icon" id="btnHelp" title="ヘルプ">？</button>
-    <button class="icon" id="btnData" title="データ">⇅</button>
+    <button class="icon" id="btnSort" title="並び順" aria-label="並び順を切り替え">↕</button>
+    <button class="icon" id="btnTheme" title="テーマ" aria-label="テーマを切り替え">🌙</button>
+    <button class="icon" id="btnSettings" title="設定" aria-label="設定">⚙</button>
+    <button class="icon" id="btnHelp" title="ヘルプ" aria-label="ヘルプ">？</button>
+    <button class="icon" id="btnData" title="データ" aria-label="データ・同期">⇅</button>
   </h1>
 
   <div class="row">
-    <textarea id="input" placeholder="タスクを入力（改行で複数まとめて）"></textarea>
-    <button class="add" id="btnVoice" title="音声で入力" style="display:none">🎤</button>
-    <button class="add" id="btnAdd" title="追加">＋</button>
+    <textarea id="input" placeholder="タスクを入力（改行で複数まとめて）" aria-label="タスクを入力"></textarea>
+    <button class="add" id="btnVoice" title="音声で入力" aria-label="音声で入力" style="display:none">🎤</button>
+    <button class="add" id="btnAdd" title="追加" aria-label="タスクを追加">＋</button>
   </div>
   <div class="hint">タブで追加→分類が自動・「今日」タブは締切=今日・「<b>明日 ○○</b>」「<b>金曜 ○○</b>」で締切も自動</div>
   <div class="tplbar" id="tplbar" style="display:none"></div>
@@ -328,7 +329,7 @@ function load(){
   // 計測中タスクは再開時点から数え直す（アプリを閉じていた時間は実働に含めない）
   state.tasks.forEach(t=>{ if(t.running) t.runStart=Date.now(); });
 }
-function save(){ try{ checkpointTimers(); }catch(e){} try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ try{ if(e&&(e.name==="QuotaExceededError"||/quota/i.test(e.message||""))) toast("保存できません（端末の保存容量がいっぱいです）"); }catch(_){} } try{ Cloud.onLocalChange(); }catch(e){} }
+function save(){ try{ checkpointTimers(); }catch(e){} let ok=true; try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ ok=false; try{ if(e&&(e.name==="QuotaExceededError"||/quota/i.test(e.message||""))) toast("保存できません（端末の保存容量がいっぱいです）"); }catch(_){} } if(ok){ try{ Cloud.onLocalChange(); }catch(e){} } }
 function normTask(t){
   const rawEst = (t.estimate!=null? t.estimate : (t.estimate_min!=null? t.estimate_min : 0));
   return {
@@ -609,6 +610,8 @@ function rescheduleRecurring(t){
   const next=nextOccurrence(t.repeat, base);
   t.due=fmtDate(next);
   if(t.alarm){ const na=shiftAlarmToDate(t.alarm, next); if(na){ t.alarm=na; t.alarmFired=false; } }
+  t.elapsed=0; t.running=false; t.runStart=0;                 // 次の回は作業時間を0から
+  if(Array.isArray(t.subs)) t.subs.forEach(s=>{ s.done=false; });  // サブタスクもリセット
   t.done=false;
 }
 // ---- 作業時間タイマー ----
@@ -632,7 +635,11 @@ function checkAlarms(){
   for(const t of state.tasks){
     if(t.done || t.alarmFired || !t.alarm) continue;
     const d=parseAlarm(t.alarm); if(!d) continue;
-    if(d.getTime()<=now){ t.alarmFired=true; changed=true; fireAlarm(t); }
+    const ms=d.getTime();
+    if(ms<=now){
+      t.alarmFired=true; changed=true;
+      if(ms > now-6*3600000) fireAlarm(t);   // 6時間以上前のアラームは（再起動/同期で）静かに既読化し、まとめて鳴らさない
+    }
   }
   if(changed) save();
   return changed;
@@ -834,6 +841,7 @@ function importJson(text){
   if(o && o.settings && typeof o.settings==="object"){ for(const k in o.settings){ if(!(k in state.settings)) state.settings[k]=o.settings[k]; } }
   if(o && Array.isArray(o.templates)){ const names=new Set(state.templates.map(t=>t.name)); o.templates.forEach(tpl=>{ if(tpl&&tpl.name&&!names.has(tpl.name)){ state.templates.push(tpl); names.add(tpl.name); } }); }
   if(o && Array.isArray(o.milestones)) state.milestones=Array.from(new Set(state.milestones.concat(o.milestones)));
+  if(o && typeof o.activeTemplate==="string" && o.activeTemplate) state.activeTemplate=o.activeTemplate;
   el("memo").value=state.memo; save(); applySettings(); try{ checkMilestones(); }catch(e){} render(); toast("📥 "+n+" 件を取り込みました");
 }
 function stamp(){ const d=new Date(); return d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+"_"+pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds()); }
@@ -1086,7 +1094,7 @@ const BK_KEY="taskweb-backups-v1", BK_DATE="taskweb-lastbackup-v1";
 function autoBackup(){
   const k=todayStr(); try{ if(localStorage.getItem(BK_DATE)===k) return; }catch(e){ return; }
   let arr=[]; try{ arr=JSON.parse(localStorage.getItem(BK_KEY)||"[]"); }catch(e){ arr=[]; }
-  const snap={date:k, json:JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,attendance:state.attendance,completionLog:state.completionLog,settings:state.settings,templates:state.templates,milestones:state.milestones})};
+  const snap={date:k, json:JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones})};
   arr.push(snap); while(arr.length>7) arr.shift();
   // 容量オーバー時は古い世代を捨てて再試行。成否が確定してからBK_DATEを記録（失敗時は翌回再挑戦）
   for(let attempt=0; attempt<7; attempt++){
@@ -1220,7 +1228,7 @@ const Cloud = (function(){
   }
   function signOutNow(){ if(auth) auth.signOut(); }
   function docRef(){ return db.collection(COLL).doc(user.uid); }
-  function hasData(d){ return !!(d && ((d.tasks&&d.tasks.length) || (d.completions&&Object.keys(d.completions).length) || d.memo)); }
+  function hasData(d){ return !!(d && ((d.tasks&&d.tasks.length) || (d.completions&&Object.keys(d.completions).length) || d.memo || (d.attendance&&Object.keys(d.attendance).length) || (d.completionLog&&d.completionLog.length) || (d.settings&&Object.keys(d.settings).length) || (d.templates&&d.templates.length) || d.activeTemplate || (d.milestones&&d.milestones.length))); }
   function onAuth(u){
     user=u; if(unsub){ unsub(); unsub=null; } renderCloud();
     if(!u){ reconciling=false; return; }
