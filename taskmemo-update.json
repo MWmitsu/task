@@ -1,5 +1,5 @@
 {
-    "version":  "1.0.0",
+    "version":  "1.0.1",
     "exe":  "https://mwmitsu.github.io/task/TaskMemo.exe",
-    "notes":  "出退勤改善・編集欄トグル・自動更新(ループ防止入り)"
+    "notes":  "製品バージョン表記をx.y.zに整備"
 }
