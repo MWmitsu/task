@@ -746,34 +746,50 @@ function buildEditSheet(){
   const nb=textarea(t.note,"補足メモ"); nb.style.minHeight="44px"; nb.oninput=()=>{ t.note=nb.value; }; nb.onblur=()=>{ save(); }; s.appendChild(nb);
   s.appendChild(label("分類"));
   s.appendChild(chipRow(CATS.map(c=>({label:c.label,on:t.cat===c.key,fn:()=>{ t.cat=c.key; commitEdit(); }}))));
-  s.appendChild(label("📍 優先度"));
-  s.appendChild(chipRow(PRIOS.map(p=>({label:p.label,on:t.priority===p.key,fn:()=>{ t.priority=p.key; commitEdit(); }}))));
-  s.appendChild(label("🏷 タグ"));
-  s.appendChild(tagEditor(t));
-  s.appendChild(label("締切"));
-  s.appendChild(chipRow(DUE_PRESETS().map(d=>({label:d.l,on:String(t.due)===String(d.v),fn:()=>{ t.due=d.v; commitEdit(); }}))));
-  const dwrap=document.createElement("div"); dwrap.style.marginTop="8px";
-  const di=document.createElement("input"); di.type="date"; di.value=String(t.due||""); di.style.maxWidth="190px";
-  di.onchange=()=>{ t.due=di.value; commitEdit(); }; dwrap.appendChild(di); s.appendChild(dwrap);
-  s.appendChild(label("📐 見積もり"+(parseInt(t.estimate,10)>0?"："+estLabel(t.estimate):"")));
-  s.appendChild(chipRow(EST_PRESETS.map(e=>({label:e.l,on:(parseInt(t.estimate,10)||0)===e.v,fn:()=>{ t.estimate=e.v; commitEdit(); }}))));
-  s.appendChild(label("🔁 繰り返し"+(t.repeat?"："+repeatLabel(t.repeat):"")));
-  s.appendChild(repeatEditor(t));
-  s.appendChild(label("☑ サブタスク ("+subDone(t)+"/"+(t.subs||[]).length+")"));
-  s.appendChild(subEditor(t));
-  s.appendChild(label("⏰ アラーム（時刻になると通知）"));
-  const awrap=document.createElement("div"); awrap.style.cssText="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;";
-  const ai=document.createElement("input"); ai.type="datetime-local"; ai.style.maxWidth="220px"; ai.value=alarmToInput(t.alarm);
-  ai.onchange=()=>{ t.alarm=inputToAlarm(ai.value); t.alarmFired=false; if(t.alarm){ requestNotifyPermission(); notifyHintIfBlocked(); } commitEdit(); };
-  const ac=document.createElement("button"); ac.className="chip"; ac.textContent="なし"; ac.onclick=()=>{ t.alarm=""; t.alarmFired=false; commitEdit(); };
-  awrap.appendChild(ai); awrap.appendChild(ac); s.appendChild(awrap);
-  const tmLab=label("⏱ 作業時間"+(elapsedSeconds(t)>0||t.running?"："+fmtElapsed(elapsedSeconds(t)):"")); tmLab.id="tmLabel"; s.appendChild(tmLab);
-  const trow=document.createElement("div"); trow.className="chips";
-  const tbtn=document.createElement("button"); tbtn.className="chip"+(t.running?" on":""); tbtn.textContent=t.running?"■ 停止":"▶ 開始";
-  tbtn.onclick=()=>{ if(t.running) stopTimer(t); else startTimer(t); buildEditSheet(); }; trow.appendChild(tbtn);
-  if(elapsedSeconds(t)>0 && !t.running){ const rb=document.createElement("button"); rb.className="chip"; rb.textContent="リセット";
-    rb.onclick=()=>{ t.elapsed=0; t.running=false; t.runStart=0; commitEdit(); }; trow.appendChild(rb); }
-  s.appendChild(trow);
+  if(getSetting("f_priority")){
+    s.appendChild(label("📍 優先度"));
+    s.appendChild(chipRow(PRIOS.map(p=>({label:p.label,on:t.priority===p.key,fn:()=>{ t.priority=p.key; commitEdit(); }}))));
+  }
+  if(getSetting("f_tags")){
+    s.appendChild(label("🏷 タグ"));
+    s.appendChild(tagEditor(t));
+  }
+  if(getSetting("f_due")){
+    s.appendChild(label("締切"));
+    s.appendChild(chipRow(DUE_PRESETS().map(d=>({label:d.l,on:String(t.due)===String(d.v),fn:()=>{ t.due=d.v; commitEdit(); }}))));
+    const dwrap=document.createElement("div"); dwrap.style.marginTop="8px";
+    const di=document.createElement("input"); di.type="date"; di.value=String(t.due||""); di.style.maxWidth="190px";
+    di.onchange=()=>{ t.due=di.value; commitEdit(); }; dwrap.appendChild(di); s.appendChild(dwrap);
+  }
+  if(getSetting("f_estimate")){
+    s.appendChild(label("📐 見積もり"+(parseInt(t.estimate,10)>0?"："+estLabel(t.estimate):"")));
+    s.appendChild(chipRow(EST_PRESETS.map(e=>({label:e.l,on:(parseInt(t.estimate,10)||0)===e.v,fn:()=>{ t.estimate=e.v; commitEdit(); }}))));
+  }
+  if(getSetting("f_repeat")){
+    s.appendChild(label("🔁 繰り返し"+(t.repeat?"："+repeatLabel(t.repeat):"")));
+    s.appendChild(repeatEditor(t));
+  }
+  if(getSetting("f_subtasks")){
+    s.appendChild(label("☑ サブタスク ("+subDone(t)+"/"+(t.subs||[]).length+")"));
+    s.appendChild(subEditor(t));
+  }
+  if(getSetting("f_alarm")){
+    s.appendChild(label("⏰ アラーム（時刻になると通知）"));
+    const awrap=document.createElement("div"); awrap.style.cssText="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px;";
+    const ai=document.createElement("input"); ai.type="datetime-local"; ai.style.maxWidth="220px"; ai.value=alarmToInput(t.alarm);
+    ai.onchange=()=>{ t.alarm=inputToAlarm(ai.value); t.alarmFired=false; if(t.alarm){ requestNotifyPermission(); notifyHintIfBlocked(); } commitEdit(); };
+    const ac=document.createElement("button"); ac.className="chip"; ac.textContent="なし"; ac.onclick=()=>{ t.alarm=""; t.alarmFired=false; commitEdit(); };
+    awrap.appendChild(ai); awrap.appendChild(ac); s.appendChild(awrap);
+  }
+  if(getSetting("f_timer")){
+    const tmLab=label("⏱ 作業時間"+(elapsedSeconds(t)>0||t.running?"："+fmtElapsed(elapsedSeconds(t)):"")); tmLab.id="tmLabel"; s.appendChild(tmLab);
+    const trow=document.createElement("div"); trow.className="chips";
+    const tbtn=document.createElement("button"); tbtn.className="chip"+(t.running?" on":""); tbtn.textContent=t.running?"■ 停止":"▶ 開始";
+    tbtn.onclick=()=>{ if(t.running) stopTimer(t); else startTimer(t); buildEditSheet(); }; trow.appendChild(tbtn);
+    if(elapsedSeconds(t)>0 && !t.running){ const rb=document.createElement("button"); rb.className="chip"; rb.textContent="リセット";
+      rb.onclick=()=>{ t.elapsed=0; t.running=false; t.runStart=0; commitEdit(); }; trow.appendChild(rb); }
+    s.appendChild(trow);
+  }
   // actions
   const act=document.createElement("div"); act.className="actions";
   act.appendChild(linkBtn("↑ 上へ",()=>{ moveTask(editIndex,-1); }));
@@ -975,6 +991,14 @@ const SETTING_DEFS = [
   {key:"templates",  label:"🧩 テンプレート",       group:"機能", def:false, desc:"新規タスクの既定値（分類・優先度・タグ・見積）をテンプレ化します。"},
   {key:"autotab",    label:"⏰ 時間帯で自動タブ切替", group:"動作", def:false, desc:"朝は「今日」昼は「すぐ」など時間帯で表示タブを自動で切り替えます。"},
   {key:"celebrate",  label:"🎉 達成のお祝い",       group:"動作", def:false, desc:"連続記録や累計の節目でお祝いを表示します。"},
+  {key:"f_priority", label:"📍 優先度",   group:"編集欄", def:true, desc:"タスク編集で「優先度」の設定を表示します。"},
+  {key:"f_tags",     label:"🏷 タグ",     group:"編集欄", def:true, desc:"タスク編集で「タグ」の設定を表示します。"},
+  {key:"f_due",      label:"📅 締め切り",  group:"編集欄", def:true, desc:"タスク編集で「締切（日付）」の設定を表示します。"},
+  {key:"f_alarm",    label:"⏰ アラーム・時刻指定", group:"編集欄", def:true, desc:"タスク編集で「アラーム（時刻通知）」の設定を表示します。"},
+  {key:"f_repeat",   label:"🔁 繰り返し", group:"編集欄", def:true, desc:"タスク編集で「繰り返し」の設定を表示します。"},
+  {key:"f_subtasks", label:"☑ サブタスク", group:"編集欄", def:true, desc:"タスク編集で「サブタスク」の設定を表示します。"},
+  {key:"f_timer",    label:"⏱ 作業時間",  group:"編集欄", def:true, desc:"タスク編集で「作業時間タイマー」を表示します。"},
+  {key:"f_estimate", label:"📐 見積もり",  group:"編集欄", def:true, desc:"タスク編集で「見積もり」の設定を表示します。"},
 ];
 function getSetting(k){ const d=SETTING_DEFS.find(s=>s.key===k); if(state.settings && (k in state.settings)) return !!state.settings[k]; return d?!!d.def:true; }
 function setSetting(k,v){ if(!state.settings) state.settings={}; state.settings[k]=!!v; save(); applySettings(); render(); }
@@ -985,7 +1009,7 @@ function applySettings(){
     const mw=document.querySelector(".memo-wrap"); if(mw) mw.style.display=getSetting("memo")?"":"none";
     showHideBtn("btnSpeak", getSetting("speak"));
     showHideBtn("btnVoice", getSetting("voice"));
-    showHideBtn("btnReport", getSetting("report"));
+    showHideBtn("btnReport", false);   // 日報ボタンは出退勤の行（attbar）にまとめたので、ここには出さない
     showHideBtn("btnGraph", getSetting("graph"));
     showHideBtn("btnCalendar", getSetting("calendar"));
     showHideBtn("btnHistory", getSetting("history"));
@@ -1009,37 +1033,65 @@ function buildSettings(){
 }
 
 // ==== 出退勤・休憩 ====
-function attToday(){ const k=todayStr(); if(!state.attendance) state.attendance={}; return state.attendance[k]||null; }
+function attOpenKey(){ if(!state.attendance) return null; let best=null; for(const k in state.attendance){ const a=state.attendance[k]; if(a&&a.in&&!a.out){ if(best===null||k>best) best=k; } } return best; }   // 開いている（出勤中・未退勤）セッションの日付キー。日付が変わっても継続
+function attActiveKey(){ return attOpenKey() || todayStr(); }
+function attActive(){ const k=attActiveKey(); if(!state.attendance) state.attendance={}; return state.attendance[k]||null; }
+function attToday(){ return attActive(); }   // 互換：開いているセッションがあれば日付に関わらずそれを返す（自動リセットしない）
 function minutesBetween(a,b){ const m1=/^(\d{1,2}):(\d{2})$/.exec(String(a||"")), m2=/^(\d{1,2}):(\d{2})$/.exec(String(b||"")); if(!m1||!m2) return 0; let d=(+m2[1]*60+ +m2[2])-(+m1[1]*60+ +m1[2]); if(d<0) d+=1440; return d; }
-function attWorked(a){ if(!(a&&a.in&&a.out)) return null; const span=minutesBetween(a.in,a.out); const bm=Math.max(0,parseInt(a.breakMin,10)||0); return Math.max(0, span-bm); }
+function attWorked(a){ if(!(a&&a.in&&a.out)) return null;
+  let span; if(a.inDate&&a.outDate){ const i=new Date(a.inDate+"T"+a.in).getTime(), o=new Date(a.outDate+"T"+a.out).getTime(); span=(isFinite(i)&&isFinite(o))?Math.round((o-i)/60000):minutesBetween(a.in,a.out); } else span=minutesBetween(a.in,a.out);   // 日跨ぎ(inDate/outDate)があれば実日時で計算
+  const bm=Math.max(0,parseInt(a.breakMin,10)||0); return Math.max(0, span-bm); }
 function attSummary(a){ if(!a) return "未打刻"; const i=a.in||"--:--", o=a.out||"--:--"; let ex=""; const bm=Math.max(0,parseInt(a.breakMin,10)||0); if(a.breakStart) ex+="（休憩中）"; else if(bm>0) ex+="（休憩 "+estLabel(bm)+"）"; const w=attWorked(a); if(w!=null) ex+="（実働 "+estLabel(w)+"）"; return "出勤 "+i+" ／ 退勤 "+o+ex; }
 function punchAttendance(){
-  const k=todayStr(); const now=hm(new Date()); if(!state.attendance) state.attendance={};
-  let a=state.attendance[k]||{};
-  if(!a.in){ a.in=now; toast("🕘 出勤 "+now); }
-  else if(!a.out){ if(a.breakStart){ a.breakMin=(parseInt(a.breakMin,10)||0)+minutesBetween(a.breakStart,now); delete a.breakStart; } a.out=now; toast("🕔 退勤 "+now+"　"+attSummary(a)); }
-  else { toast("本日は退勤済み　"+attSummary(a)); return; }
-  state.attendance[k]=a; save(); applyAttendanceUI();
+  if(!state.attendance) state.attendance={};
+  const now=hm(new Date()); const today=todayStr();
+  const openK=attOpenKey();
+  if(openK){ // 出勤中→退勤。開いている全セッションを閉じる（複数端末の同期で複数開いていても孤立させない）。日付が変わっても自動退勤はしない
+    for(const k in state.attendance){ const a=state.attendance[k]; if(!(a&&a.in&&!a.out)) continue;
+      if(a.breakStart){ a.breakMin=(parseInt(a.breakMin,10)||0)+minutesBetween(a.breakStart,now); delete a.breakStart; }
+      a.out=now; if(k!==today){ a.inDate=k; a.outDate=today; }   // 日跨ぎは日付を残して実働を正しく計算
+    }
+    toast("🕔 退勤 "+now+"　"+attSummary(state.attendance[openK]));
+  } else { // 出勤
+    const k=today; let a=state.attendance[k]||{};
+    if(a.in&&a.out){ toast("本日は退勤済み　"+attSummary(a)); return; }
+    a.in=now; state.attendance[k]=a; toast("🕘 出勤 "+now);
+  }
+  save(); applyAttendanceUI();
 }
 function punchBreak(){
-  const k=todayStr(); const a=attToday(); if(!(a&&a.in)||a.out){ toast("出勤中のみ休憩できます"); return; }
-  const now=hm(new Date());
+  const k=attOpenKey(); if(!k){ toast("出勤中のみ休憩できます"); return; }
+  const a=state.attendance[k]; const now=hm(new Date());
   if(a.breakStart){ a.breakMin=(parseInt(a.breakMin,10)||0)+minutesBetween(a.breakStart,now); delete a.breakStart; toast("▶ 再開 "+now); }
   else { a.breakStart=now; toast("☕ 休憩 "+now); }
   state.attendance[k]=a; save(); applyAttendanceUI();
 }
+function attReset(){
+  if(!state.attendance) state.attendance={};
+  const targets=new Set(Object.keys(state.attendance).filter(kk=>{ const a=state.attendance[kk]; return a&&a.in&&!a.out; }));  // 開いている全セッション
+  const ak=attActiveKey(); if(state.attendance[ak]) targets.add(ak);
+  if(!targets.size){ toast("リセットする出退勤がありません"); return; }
+  if(!confirm("出退勤の記録をリセットしますか？（この打刻を消去します）")) return;
+  targets.forEach(kk=>delete state.attendance[kk]); save(); applyAttendanceUI(); toast("🕘 出退勤をリセットしました");
+}
 function applyAttendanceUI(){
   const bar=el("attbar"); if(!bar) return;
-  if(!getSetting("attendance")){ bar.style.display="none"; bar.innerHTML=""; return; }
+  const showAtt=getSetting("attendance"), showRep=getSetting("report");
+  if(!showAtt && !showRep){ bar.style.display="none"; bar.innerHTML=""; return; }
   bar.style.display=""; bar.innerHTML="";
-  const a=attToday(); const working=!!(a&&a.in&&!a.out);
-  const b1=document.createElement("button"); b1.className="attbtn"; b1.textContent=!a?"🕘 出勤":(!a.out?"🕔 退勤":"✅ 退勤済"); b1.onclick=punchAttendance; bar.appendChild(b1);
-  if(working){ const b2=document.createElement("button"); b2.className="attbtn"; b2.textContent=a.breakStart?"▶ 再開":"☕ 休憩"; b2.onclick=punchBreak; bar.appendChild(b2); }
-  const st=document.createElement("span"); st.className="attstat"; st.textContent=a?attSummary(a):"未打刻"; bar.appendChild(st);
-  const ed=document.createElement("button"); ed.className="attbtn ghost"; ed.textContent="✎"; ed.title="勤怠を修正"; ed.onclick=openAttendanceEdit; bar.appendChild(ed);
+  const mk=(txt,fn,cls)=>{ const b=document.createElement("button"); b.className="attbtn"+(cls?" "+cls:""); b.textContent=txt; b.onclick=fn; bar.appendChild(b); return b; };
+  if(showAtt){
+    const a=attActive(); const working=!!(a&&a.in&&!a.out);
+    mk(!a?"🕘 出勤":(!a.out?"🕔 退勤":"✅ 退勤済"), punchAttendance);            // 出勤（打刻で退勤に変化）
+    const st=document.createElement("span"); st.className="attstat"; st.textContent=a?attSummary(a):"未打刻"; bar.appendChild(st);  // 打刻時間
+    if(working) mk(a.breakStart?"▶ 再開":"☕ 休憩", punchBreak);                  // 休憩
+    mk("✎ 修正", openAttendanceEdit, "ghost").title="出退勤の時刻を修正";
+    mk("⟳ リセット", attReset, "ghost").title="出退勤の記録をリセット";           // リセット
+  }
+  if(showRep) mk("📋 日報", copyDailyReport).title="今日の完了・作業時間・出退勤をコピー";   // 日報（同じ行にまとめる）
 }
 function openAttendanceEdit(){
-  const k=todayStr(); const a=attToday()||{};
+  const k=attActiveKey(); const a=(state.attendance&&state.attendance[k])||{};
   const cur=prompt("勤怠を修正：出勤,退勤,休憩分 をカンマ区切りで\n例 09:00,18:00,60 ／ 空欄可 ／ 空のまま決定で本日を消去", [a.in||"", a.out||"", (parseInt(a.breakMin,10)||0)].join(","));
   if(cur===null) return;
   const p=cur.split(",").map(s=>s.trim()); const ni=p[0]||"", no=p[1]||"", nb=parseInt(p[2],10)||0;
@@ -1047,7 +1099,9 @@ function openAttendanceEdit(){
   if(p[2] && !/^\d+$/.test(p[2])){ toast("休憩は分（0以上の整数）で入力してください"); return; }
   if(!state.attendance) state.attendance={};
   if(!ni&&!no&&!nb){ delete state.attendance[k]; toast("🕘 本日の勤怠を消去"); }
-  else { const e={}; if(ni)e.in=ni; if(no)e.out=no; if(nb>0)e.breakMin=nb; state.attendance[k]=e; toast("🕘 勤怠を更新"); }
+  else { const e={}; if(ni)e.in=ni; if(no)e.out=no; if(nb>0)e.breakMin=nb;
+    if(!no && a.breakStart) e.breakStart=a.breakStart;   // 退勤を入れずに修正したときは進行中の休憩を保持（黙って消さない）
+    state.attendance[k]=e; toast("🕘 勤怠を更新"); }
   save(); applyAttendanceUI();
 }
 
@@ -1056,7 +1110,7 @@ function buildDailyReport(){
   const k=todayStr(); const entries=(state.completionLog||[]).filter(e=>e.date===k);
   let sum=0; entries.forEach(e=>sum+=parseInt(e.min,10)||0);
   const lines=["📋 日報 "+k, "完了 "+entries.length+"件 / 合計 "+(sum>0?estLabel(sum):"0分")];
-  if(getSetting("attendance")){ const a=attToday(); if(a&&(a.in||a.out)) lines.push("🕐 "+attSummary(a)); }
+  if(getSetting("attendance")){ const ak=attActiveKey(); const a=(state.attendance&&state.attendance[ak])||null; if(a&&(a.in||a.out)){ const note=(ak!==k)?("（"+ak+" から継続中）"):""; lines.push("🕐 "+attSummary(a)+note); } }
   lines.push("");
   entries.forEach(e=>{ const suf=(parseInt(e.min,10)>0)?"（⏱"+estLabel(e.min)+"）":""; lines.push("✓ "+e.text+suf); });
   if(!entries.length) lines.push("（本日の完了はまだありません）");
