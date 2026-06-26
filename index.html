@@ -140,6 +140,9 @@
   html[data-theme="light"] .b.note{color:#5b5482;}
   html[data-theme="light"] .task.is-done .ttext{color:#9a93b8;}
   html[data-theme="light"] .task:active{background:#1a132208;}
+  .rtbtn{flex:none; align-self:center; width:34px; height:34px; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--green); font-size:13px; line-height:1; padding:0;}
+  .rtbtn.run{color:var(--accent); border-color:var(--accent); background:#ff6b5e1a;}
+  .rtbtn:active{background:var(--panel2);}
   .rowright{flex:none; align-self:center; color:var(--dim); font-size:20px; padding:2px 4px;}
   .empty{color:var(--dim); font-size:13px; padding:18px 6px; text-align:center;}
   .memo-wrap{margin-top:18px;}
@@ -564,8 +567,14 @@ function renderList(){
       b.onclick=(e)=>{ e.stopPropagation(); el("search").value=tag; search=tag; render(); }; badges.appendChild(b); });
     if(t.note){ badges.appendChild(mkBadge("📝"+t.note.slice(0,18),"b note")); }
     if(badges.children.length) body.appendChild(badges);
+    let rtbtn=null;
+    if(getSetting("f_timer") && !t.done){   // 詳細を開かずワンタップで計測 開始/停止
+      rtbtn=document.createElement("button"); rtbtn.className="rtbtn"+(t.running?" run":""); rtbtn.textContent=t.running?"■":"▶";
+      rtbtn.title=t.running?"作業計測を停止":"作業計測を開始（詳細を開かずに）"; rtbtn.setAttribute("aria-label", rtbtn.title);
+      rtbtn.onclick=(e)=>{ e.stopPropagation(); if(t.running) stopTimer(t); else startTimer(t); };
+    }
     const right=document.createElement("div"); right.className="rowright"; right.textContent="›";
-    row.appendChild(ck); row.appendChild(dot); row.appendChild(body); row.appendChild(right);
+    row.appendChild(ck); row.appendChild(dot); row.appendChild(body); if(rtbtn) row.appendChild(rtbtn); row.appendChild(right);
     row.onclick=(e)=>{ if(Date.now() < suppressClickUntil){ e.preventDefault(); e.stopPropagation(); return; } openEdit(i); };
     attachRowGestures(row, i);
     list.appendChild(row);
@@ -581,7 +590,7 @@ function attachRowGestures(row, i){
   row.addEventListener("pointerdown", function(e){
     if(e.pointerType==="mouse" && e.button!==0) return;
     const onDot=e.target.closest(".dot");
-    const onInteractive=e.target.closest(".ck, .b, .rowright");
+    const onInteractive=e.target.closest(".ck, .b, .rowright, .rtbtn");
     if(onInteractive && !onDot) return;          // チェックボックス・タグ等は通常タップに任せる
     startGesture(e, i, row, !!(onDot && sort==="manual"));   // ●(手動並び順)は即ドラッグ、行は長押しでドラッグ
   });
@@ -699,6 +708,26 @@ function fmtElapsed(sec){ sec=Math.max(0,Math.floor(sec)); const h=Math.floor(se
 function checkpointTimers(){ const now=Date.now(); state.tasks.forEach(t=>{ if(t.running && t.runStart>0){ t.elapsed=(parseFloat(t.elapsed)||0)+(now-t.runStart)/1000; t.runStart=now; } }); }
 function startTimer(t){ state.tasks.forEach(x=>{ if(x.running && x.runStart>0){ x.elapsed=(parseFloat(x.elapsed)||0)+(Date.now()-x.runStart)/1000; } x.running=false; x.runStart=0; }); t.running=true; t.runStart=Date.now(); save(); render(); }
 function stopTimer(t){ if(t.running && t.runStart>0){ t.elapsed=(parseFloat(t.elapsed)||0)+(Date.now()-t.runStart)/1000; } t.running=false; t.runStart=0; save(); render(); }
+// ---- 作業時間の手入力（タイマーを使わず直接セット）: 1:30 / 90分 / 1.5時間 / 90 を分に解釈 ----
+function parseWorkTime(s){
+  s=String(s||"").trim(); if(!s) return null;
+  let m=/^(\d+):([0-5]?\d)$/.exec(s); if(m) return (+m[1])*60 + (+m[2]);
+  let total=0, hit=false;
+  let mh=/(\d+(?:\.\d+)?)\s*(?:時間|時|h|H)/.exec(s); if(mh){ total+=parseFloat(mh[1])*60; hit=true; }
+  let mm=/(\d+)\s*分/.exec(s); if(mm){ total+=parseInt(mm[1],10); hit=true; }
+  if(hit) return Math.round(total);
+  let mn=/^(\d+(?:\.\d+)?)$/.exec(s); if(mn) return Math.round(parseFloat(mn[1]));
+  return null;
+}
+function setWorkTime(t, text){
+  const s=String(text||"").trim(); if(!s) return;
+  const mins=parseWorkTime(s);
+  if(mins===null){ toast("作業時間は 1:30 / 90分 / 90 のように入力してください"); return; }
+  const newElapsed=mins*60;
+  if(!t.running && Math.abs((parseFloat(t.elapsed)||0)-newElapsed)<1) return;   // 変化なし
+  t.elapsed=newElapsed; t.running=false; t.runStart=0; save(); render();
+}
+function fmtHM(sec){ const total=Math.max(0,Math.round(sec/60)); const h=Math.floor(total/60), m=total%60; return h+":"+pad(m); }
 // ---- アラーム（リマインダー通知） ----
 function alarmToInput(a){ const m=/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(a||"")); return m? (m[1]+"-"+m[2]+"-"+m[3]+"T"+m[4]+":"+m[5]) : ""; }
 function inputToAlarm(v){ const m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(v||"")); return m? (m[1]+"-"+m[2]+"-"+m[3]+" "+m[4]+":"+m[5]) : ""; }
@@ -789,6 +818,17 @@ function buildEditSheet(){
     if(elapsedSeconds(t)>0 && !t.running){ const rb=document.createElement("button"); rb.className="chip"; rb.textContent="リセット";
       rb.onclick=()=>{ t.elapsed=0; t.running=false; t.runStart=0; commitEdit(); }; trow.appendChild(rb); }
     s.appendChild(trow);
+    // 作業時間を手入力（▶/■を使わず直接セット）
+    const mrow=document.createElement("div"); mrow.style.cssText="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;";
+    const mlab=document.createElement("span"); mlab.textContent="手入力"; mlab.style.cssText="font-size:13px;color:var(--sub);";
+    const mi=document.createElement("input"); mi.type="text"; mi.placeholder="例) 1:30 / 90分 / 90"; mi.style.maxWidth="150px";
+    mi.value = elapsedSeconds(t)>0 ? fmtHM(elapsedSeconds(t)) : "";
+    const applyWt=()=>{ setWorkTime(t, mi.value); const lab=el("tmLabel"); if(lab) lab.textContent="⏱ 作業時間"+(elapsedSeconds(t)>0||t.running?"："+fmtElapsed(elapsedSeconds(t)):""); };
+    mi.onkeydown=(e)=>{ if(e.key==="Enter"){ e.preventDefault(); applyWt(); mi.blur(); } };
+    mi.onblur=applyWt;
+    mrow.appendChild(mlab); mrow.appendChild(mi); s.appendChild(mrow);
+    const wh=document.createElement("div"); wh.style.cssText="font-size:11px;color:var(--dim);margin-top:3px;"; wh.textContent="タイマーを使わず作業時間を直接セット（Enter / 欄を離すと確定）";
+    s.appendChild(wh);
   }
   // actions
   const act=document.createElement("div"); act.className="actions";
