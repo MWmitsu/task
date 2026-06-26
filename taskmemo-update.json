@@ -1,5 +1,5 @@
 {
-    "version":  "1.0.1",
+    "version":  "1.0.2",
     "exe":  "https://mwmitsu.github.io/task/TaskMemo.exe",
-    "notes":  "製品バージョン表記をx.y.zに整備"
+    "notes":  "作業時間の手入力・各行に開始/停止ボタン・上辺/左辺/左上でのサイズ変更を追加"
 }
