@@ -102,6 +102,8 @@
   .tab.on{color:#1a1322; font-weight:700;}
   .tab.all.on{background:var(--accent);} .tab.today.on{background:var(--orange);}
   .tab.now.on{background:var(--now);} .tab.any.on{background:var(--any);}
+  .tab.normal.on{background:var(--normal);}
+  .tab.tomorrow.on{background:#6fb0e6;}
   .search{margin:8px 0 2px;}
   .qstat{color:var(--sub); font-size:12px; margin:8px 2px 2px;}
   .list{margin-top:8px; display:flex; flex-direction:column; gap:2px; overflow-x:hidden;}
@@ -286,7 +288,16 @@
     <h2>⚙ 設定</h2>
     <div class="help" style="margin:-4px 0 8px; font-size:11.5px; color:var(--dim)">オフにすると、その機能や表示を隠せます（いつでも戻せます）。</div>
     <div id="setBody"></div>
-    <div class="actions" style="margin-top:14px"><button class="linkbtn" id="setClose">閉じる</button></div>
+    <div class="actions" style="margin-top:14px"><button class="linkbtn" id="openTabMgr">🗂 タブ・分類の管理</button><button class="linkbtn" id="setClose">閉じる</button></div>
+  </div>
+</div>
+<!-- タブ・分類の管理シート -->
+<div class="ov" id="tabmgrOv">
+  <div class="sheet">
+    <h2>🗂 タブ・分類の管理</h2>
+    <div class="help" style="margin:-4px 0 8px; font-size:11.5px; color:var(--dim)">タブの表示オンオフ／分類（手動）の追加・名前・色・並べ替え・削除。</div>
+    <div id="tabmgrBody"></div>
+    <div class="actions" style="margin-top:14px"><button class="linkbtn" id="tabmgrClose">閉じる</button></div>
   </div>
 </div>
 <!-- グラフシート -->
@@ -333,11 +344,22 @@
 "use strict";
 const VERSION = "Web版 v1";
 const LS_KEY = "taskweb-data-v1";
-const CATS = [
+const BUILTIN_CATS = [
   {key:"now", label:"すぐ", color:"var(--now)"},
   {key:"normal", label:"通常", color:"var(--normal)"},
   {key:"any", label:"いつでも", color:"var(--any)"},
 ];
+let CATS = BUILTIN_CATS.slice();   // 実体は rebuildCats() で 標準＋手動追加 に再構築
+function rebuildCats(){
+  const list = BUILTIN_CATS.slice();
+  for(const c of (state.customCats||[])){
+    if(!c||!c.key) continue;
+    if(BUILTIN_CATS.some(b=>b.key===c.key)) continue;
+    if(list.some(x=>x.key===c.key)) continue;
+    list.push({key:String(c.key), label:String(c.label||c.key), color:(c.color||"#8a82b0"), custom:true});
+  }
+  CATS = list;
+}
 const PRIOS = [
   {key:"", label:"なし"}, {key:"low", label:"低", badge:"🔹低", cls:"pri-low"},
   {key:"mid", label:"中", badge:"🔸中", cls:"pri-mid"}, {key:"high", label:"高", badge:"🔺高", cls:"pri-high"},
@@ -369,8 +391,9 @@ function repeatKey(v){
 function subDone(t){ return (t.subs||[]).filter(s=>s.done).length; }
 
 // ---- state ----
-let state = { tasks:[], completions:{}, memo:"", hideDone:false, attendance:{}, completionLog:[], settings:{}, templates:[], activeTemplate:"", milestones:[] };
+let state = { tasks:[], completions:{}, memo:"", hideDone:false, attendance:{}, completionLog:[], settings:{}, templates:[], activeTemplate:"", milestones:[], customCats:[], tabVisible:{} };
 let filter = "all", search = "", editIndex = -1, sort = "manual";
+let lastRenderDate = "";   // 日付変化検知（明日→今日のロールオーバー再描画）
 
 // ---- date utils ----
 function pad(n){ return (n<10?"0":"")+n; }
@@ -383,10 +406,14 @@ function parseDate(s){ if(!s) return null; const m=/^(\d{4})-(\d{2})-(\d{2})$/.e
   const d=new Date(y,mo-1,day); if(d.getMonth()!==mo-1||d.getDate()!==day) return null;
   d.setHours(0,0,0,0); return d; }
 function dueLEToday(s){ const d=parseDate(s); return d? d.getTime()<=today().getTime():false; }
+function dueEqTomorrow(s){ const d=parseDate(s); return d? d.getTime()===addDays(today(),1).getTime():false; }
 
 // ---- persistence ----
 function load(){
   try{ const raw=localStorage.getItem(LS_KEY); if(raw){ const o=JSON.parse(raw);
+    state.customCats=Array.isArray(o.customCats)?o.customCats:[];
+    state.tabVisible=(o.tabVisible&&typeof o.tabVisible==="object")?o.tabVisible:{};
+    rebuildCats();   // タスク正規化(normTask→catKey)より前に分類を確定＝手動分類catが「通常」に消えないように
     state.tasks=(o.tasks||[]).map(normTask); state.completions=o.completions||{}; state.memo=o.memo||""; state.hideDone=!!o.hideDone;
     state.attendance=(o.attendance&&typeof o.attendance==="object")?o.attendance:{};
     state.completionLog=Array.isArray(o.completionLog)?o.completionLog:[];
@@ -395,6 +422,7 @@ function load(){
     state.activeTemplate=typeof o.activeTemplate==="string"?o.activeTemplate:"";
     state.milestones=Array.isArray(o.milestones)?o.milestones:[]; }
   }catch(e){}
+  try{ rebuildCats(); }catch(e){}
   // 計測中タスクは再開時点から数え直す（アプリを閉じていた時間は実働に含めない）
   state.tasks.forEach(t=>{ if(t.running) t.runStart=Date.now(); });
 }
@@ -442,8 +470,8 @@ function estLabel(min){ min=parseInt(min,10)||0; if(min<=0) return ""; const h=M
   if(h>0&&m>0) return h+"時間"+m+"分"; if(h>0) return h+"時間"; return m+"分"; }
 
 // ---- add / current defaults ----
-function curCat(){ return filter==="now"?"now":filter==="any"?"any":"normal"; }
-function curDue(){ return filter==="today"?todayStr():""; }
+function curCat(){ return CATS.some(c=>c.key===filter)?filter:"normal"; }
+function curDue(){ if(filter==="today") return todayStr(); if(filter==="tomorrow") return fmtDate(addDays(today(),1)); return ""; }
 function newTask(text, applyTpl){ const t={text:text,done:false,due:curDue(),cat:curCat(),note:"",repeat:"",estimate:0,priority:"",tags:[],subs:[],alarm:"",alarmFired:false,elapsed:0,running:false,runStart:0}; if(applyTpl!==false){ try{ applyTemplate(t); }catch(e){} } return t; }
 function addTasks(){
   const raw=el("input").value; if(!raw.trim()) return; let added=0;
@@ -460,10 +488,10 @@ function addTasks(){
 function matchFilter(t){
   if(state.hideDone && t.done) return false;
   let ok;
-  if(filter==="today") ok = (!t.done && dueLEToday(t.due));
-  else if(filter==="now") ok = (!t.done && t.cat==="now" && !dueLEToday(t.due));
-  else if(filter==="any") ok = (!t.done && t.cat==="any" && !dueLEToday(t.due));
-  else ok = true;
+  if(filter==="all") ok = true;
+  else if(filter==="today") ok = (!t.done && dueLEToday(t.due));
+  else if(filter==="tomorrow") ok = (!t.done && dueEqTomorrow(t.due));
+  else ok = (!t.done && t.cat===filter && !dueLEToday(t.due) && !dueEqTomorrow(t.due));   // 分類タブ：締切が今日以下/明日のものは日付ビューへ譲る（排他）
   if(!ok) return false;
   if(search){ const hay=((t.text||"")+" "+(t.note||"")+" "+(t.tags||[]).join(" ")).toLowerCase();
     if(!hay.includes(search.toLowerCase())) return false; }
@@ -510,12 +538,24 @@ function render(){
   renderTabs(); renderList(); renderStat(); renderQStat();
   el("btnHideDone").textContent = state.hideDone? "👁 完了を表示":"👁 完了を隠す";
 }
+function tabVisibleDefault(k){ if(k==="normal") return false; return true; }   // 標準/明日/手動は表示、通常タブのみ既定オフ
+function tabVisible(k){ if(k==="all") return true; if(state.tabVisible && (k in state.tabVisible)) return !!state.tabVisible[k]; return tabVisibleDefault(k); }
+function tabDefs(){
+  const list=[{key:"all",label:"すべて",kind:"all"},{key:"today",label:"今日",kind:"date"},{key:"tomorrow",label:"明日",kind:"date"}];
+  for(const c of CATS) list.push({key:c.key,label:c.label,kind:"cat"});
+  return list;
+}
+function visibleTabDefs(){ return tabDefs().filter(f=>tabVisible(f.key)); }
+function setTabVisible(k,v){ if(k==="all") return; if(!state.tabVisible) state.tabVisible={}; state.tabVisible[k]=!!v; save(); render(); }
 function renderTabs(){
-  const defs=[["all","すべて"],["today","今日"],["now","すぐ"],["any","いつでも"]];
+  const defs=visibleTabDefs(); const visKeys=defs.map(f=>f.key);
+  if(visKeys.indexOf(filter)<0) filter = visKeys.length? visKeys[0] : "all";   // 隠したタブが選択中ならフォールバック
   el("tabs").innerHTML="";
-  for(const [k,l] of defs){ const b=document.createElement("button");
-    b.className="tab "+k+(filter===k?" on":""); b.textContent=l;
-    b.onclick=()=>{ filter=k; render(); }; el("tabs").appendChild(b); }
+  for(const f of defs){ const b=document.createElement("button");
+    const builtin=(f.kind!=="cat")||["now","normal","any"].indexOf(f.key)>=0;
+    b.className="tab "+(builtin?f.key:"cat")+(filter===f.key?" on":""); b.textContent=f.label;
+    if(!builtin){ const col=catInfo(f.key).color; try{ if(filter===f.key){ b.style.background=col; b.style.color="#1a1322"; } else { b.style.borderColor=col; } }catch(e){} }
+    b.onclick=()=>{ filter=f.key; render(); }; el("tabs").appendChild(b); }
 }
 function renderQStat(){
   let cnt=0,est=0,hi=0,mid=0,lo=0;
@@ -983,7 +1023,7 @@ function importCsv(text){
 
 // ---- JSON ----
 function exportJson(){
-  download("taskweb_"+stamp()+".json", JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones},null,2), "application/json");
+  download("taskweb_"+stamp()+".json", JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones,customCats:state.customCats,tabVisible:state.tabVisible},null,2), "application/json");
   toast("📤 JSONを書き出しました");
 }
 function exportSyncFile(){
@@ -995,6 +1035,10 @@ function exportSyncFile(){
 function importJson(text){
   let o; try{ o=JSON.parse(text.replace(/^﻿/,"")); }catch(e){ toast("JSONを読めませんでした"); return; }
   const arr = Array.isArray(o)? o : (o.tasks||[]);
+  // タスク正規化(normTask→catKey)より前に、取り込む手動分類を先にマージ＆再構築＝取り込みタスクのcatが「通常」に消えないように
+  if(o && Array.isArray(o.customCats)){ const keys=new Set((state.customCats||[]).map(c=>c&&c.key)); o.customCats.forEach(c=>{ if(c&&c.key&&!keys.has(c.key)){ state.customCats.push(c); keys.add(c.key); } }); }   // 名前(キー)でマージ
+  if(o && o.tabVisible && typeof o.tabVisible==="object"){ for(const k in o.tabVisible){ if(!(k in state.tabVisible)) state.tabVisible[k]=!!o.tabVisible[k]; } }
+  try{ rebuildCats(); }catch(e){}
   const exist=new Set(state.tasks.map(t=>t.text)); let n=0;
   for(const raw of arr){ const t=normTask(raw); if(!t.text||exist.has(t.text)) continue; state.tasks.push(t); exist.add(t.text); n++; }
   if(o && o.completions && typeof o.completions==="object"){ for(const k in o.completions){ state.completions[k]=Math.max(state.completions[k]||0, o.completions[k]||0); } }
@@ -1039,6 +1083,10 @@ const SETTING_DEFS = [
   {key:"f_subtasks", label:"☑ サブタスク", group:"編集欄", def:true, desc:"タスク編集で「サブタスク」の設定を表示します。"},
   {key:"f_timer",    label:"⏱ 作業時間",  group:"編集欄", def:true, desc:"タスク編集で「作業時間タイマー」を表示します。"},
   {key:"f_estimate", label:"📐 見積もり",  group:"編集欄", def:true, desc:"タスク編集で「見積もり」の設定を表示します。"},
+  {key:"report_summary",    label:"📋 完了件数・合計", group:"日報", def:true,  desc:"日報に「完了 N件 / 合計 ○分」の集計行を入れます。"},
+  {key:"report_attendance", label:"🕐 出退勤",        group:"日報", def:true,  desc:"日報に出退勤（実働時間）の行を入れます（出退勤がオンのとき）。"},
+  {key:"report_done",       label:"✓ 完了タスク一覧", group:"日報", def:true,  desc:"日報に、その日完了したタスクの一覧を入れます。"},
+  {key:"report_tomorrow",   label:"🌅 翌日のタスク",   group:"日報", def:false, desc:"日報に、締切が明日のタスク（翌日のタスク）の一覧を入れます。"},
 ];
 function getSetting(k){ const d=SETTING_DEFS.find(s=>s.key===k); if(state.settings && (k in state.settings)) return !!state.settings[k]; return d?!!d.def:true; }
 function setSetting(k,v){ if(!state.settings) state.settings={}; state.settings[k]=!!v; save(); applySettings(); render(); }
@@ -1070,6 +1118,51 @@ function buildSettings(){
     const ds=document.createElement("div"); ds.className="setdesc"; ds.textContent=s.desc;
     txt.appendChild(lb); txt.appendChild(ds); row.appendChild(cb); row.appendChild(txt); body.appendChild(row);
   });
+}
+
+// ==== タブ・分類の管理（タブ表示オンオフ＋手動分類CRUD） ====
+function newCatKey(){ let k; do{ k="cat_"+Math.random().toString(36).slice(2,10); }while(CATS.some(c=>c.key===k)); return k; }
+function addCustomCat(label,color){ const lbl=String(label||"").trim(); if(!lbl) return null; const key=newCatKey(); if(!Array.isArray(state.customCats)) state.customCats=[]; state.customCats.push({key:key,label:lbl,color:color||"#8a82b0"}); rebuildCats(); save(); render(); return key; }
+function renameCustomCat(key,label){ const lbl=String(label||"").trim(); if(!lbl) return; (state.customCats||[]).forEach(c=>{ if(c.key===key) c.label=lbl; }); rebuildCats(); save(); render(); }
+function recolorCustomCat(key,color){ if(!color) return; (state.customCats||[]).forEach(c=>{ if(c.key===key) c.color=color; }); rebuildCats(); save(); render(); }
+function deleteCustomCat(key){ state.tasks.forEach(t=>{ if(t.cat===key) t.cat="normal"; }); state.customCats=(state.customCats||[]).filter(c=>c&&c.key!==key); if(state.tabVisible) delete state.tabVisible[key]; rebuildCats(); save(); render(); }
+function moveCustomCat(key,dir){ const arr=state.customCats||[]; const i=arr.findIndex(c=>c&&c.key===key); if(i<0) return; const j=i+dir; if(j<0||j>=arr.length) return; const tmp=arr[i]; arr[i]=arr[j]; arr[j]=tmp; rebuildCats(); save(); render(); }
+function catHex(c){ c=String(c||""); return /^#[0-9a-fA-F]{6}$/.test(c)? c : "#8a82b0"; }   // <input type=color> 用（CSS var等は既定色）
+function openTabManager(){ buildTabManager(); el("tabmgrOv").classList.add("show"); syncModalLock(); }
+function buildTabManager(){
+  const body=el("tabmgrBody"); body.innerHTML="";
+  const h1=document.createElement("div"); h1.className="setgroup"; h1.textContent="表示するタブ"; body.appendChild(h1);
+  tabDefs().forEach(f=>{
+    if(f.key==="all") return;
+    const row=document.createElement("label"); row.className="setrow";
+    const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=tabVisible(f.key);
+    cb.onchange=()=>{ setTabVisible(f.key, cb.checked); };
+    const txt=document.createElement("div"); txt.className="settxt";
+    const lb=document.createElement("div"); lb.className="setlabel"; lb.textContent=f.label;
+    txt.appendChild(lb); row.appendChild(cb); row.appendChild(txt); body.appendChild(row);
+  });
+  const h2=document.createElement("div"); h2.className="setgroup"; h2.textContent="分類（手動で追加した項目）"; body.appendChild(h2);
+  const customs=CATS.filter(c=>c.custom);
+  if(!customs.length){ const e=document.createElement("div"); e.className="setdesc"; e.style.margin="2px 0 6px"; e.textContent="（まだありません。下の「＋ 分類を追加」から作れます）"; body.appendChild(e); }
+  customs.forEach(c=>{
+    const row=document.createElement("div"); row.style.cssText="display:flex;align-items:center;gap:6px;margin:5px 0;flex-wrap:wrap;";
+    const sw=document.createElement("span"); sw.style.cssText="width:14px;height:14px;border-radius:7px;flex:none;background:"+c.color+";";
+    const lb=document.createElement("span"); lb.textContent=c.label; lb.style.cssText="flex:1;min-width:60px;font-size:14px;word-break:break-word;";
+    row.appendChild(sw); row.appendChild(lb);
+    const mk=(label,fn)=>{ const b=document.createElement("button"); b.className="linkbtn"; b.style.cssText="padding:5px 8px;font-size:12px;"; b.textContent=label; b.onclick=fn; return b; };
+    row.appendChild(mk("名前",()=>{ const n=prompt("分類の名前", c.label); if(n&&n.trim()){ renameCustomCat(c.key,n); buildTabManager(); } }));
+    const colorWrap=document.createElement("label"); colorWrap.className="linkbtn"; colorWrap.style.cssText="padding:5px 8px;font-size:12px;position:relative;cursor:pointer;"; colorWrap.textContent="色";
+    const ci=document.createElement("input"); ci.type="color"; ci.value=catHex(c.color); ci.style.cssText="position:absolute;left:0;top:0;width:100%;height:100%;opacity:0;cursor:pointer;";
+    ci.onchange=()=>{ recolorCustomCat(c.key, ci.value); buildTabManager(); };
+    colorWrap.appendChild(ci); row.appendChild(colorWrap);
+    row.appendChild(mk("↑",()=>{ moveCustomCat(c.key,-1); buildTabManager(); }));
+    row.appendChild(mk("↓",()=>{ moveCustomCat(c.key,1); buildTabManager(); }));
+    row.appendChild(mk("削除",()=>{ if(confirm("「"+c.label+"」を削除します。中のタスクは「通常」に移ります。よろしいですか？")){ deleteCustomCat(c.key); buildTabManager(); } }));
+    body.appendChild(row);
+  });
+  const add=document.createElement("button"); add.className="linkbtn"; add.style.marginTop="8px"; add.textContent="＋ 分類を追加";
+  add.onclick=()=>{ const n=prompt("新しい分類の名前",""); if(n&&n.trim()){ addCustomCat(n,"#6fb0e6"); buildTabManager(); } };
+  body.appendChild(add);
 }
 
 // ==== 出退勤・休憩 ====
@@ -1149,11 +1242,21 @@ function openAttendanceEdit(){
 function buildDailyReport(){
   const k=todayStr(); const entries=(state.completionLog||[]).filter(e=>e.date===k);
   let sum=0; entries.forEach(e=>sum+=parseInt(e.min,10)||0);
-  const lines=["📋 日報 "+k, "完了 "+entries.length+"件 / 合計 "+(sum>0?estLabel(sum):"0分")];
-  if(getSetting("attendance")){ const ak=attActiveKey(); const a=(state.attendance&&state.attendance[ak])||null; if(a&&(a.in||a.out)){ const note=(ak!==k)?("（"+ak+" から継続中）"):""; lines.push("🕐 "+attSummary(a)+note); } }
-  lines.push("");
-  entries.forEach(e=>{ const suf=(parseInt(e.min,10)>0)?"（⏱"+estLabel(e.min)+"）":""; lines.push("✓ "+e.text+suf); });
-  if(!entries.length) lines.push("（本日の完了はまだありません）");
+  const lines=["📋 日報 "+k];
+  if(getSetting("report_summary")) lines.push("完了 "+entries.length+"件 / 合計 "+(sum>0?estLabel(sum):"0分"));
+  if(getSetting("report_attendance") && getSetting("attendance")){ const ak=attActiveKey(); const a=(state.attendance&&state.attendance[ak])||null; if(a&&(a.in||a.out)){ const note=(ak!==k)?("（"+ak+" から継続中）"):""; lines.push("🕐 "+attSummary(a)+note); } }
+  if(getSetting("report_done")){
+    lines.push("");
+    entries.forEach(e=>{ const suf=(parseInt(e.min,10)>0)?"（⏱"+estLabel(e.min)+"）":""; lines.push("✓ "+e.text+suf); });
+    if(!entries.length) lines.push("（本日の完了はまだありません）");
+  }
+  if(getSetting("report_tomorrow")){
+    const tom=state.tasks.filter(t=>!t.done && dueEqTomorrow(t.due));
+    lines.push("");
+    lines.push("🌅 翌日のタスク（"+tom.length+"件）");
+    if(tom.length) tom.forEach(t=>lines.push("・"+t.text));
+    else lines.push("（明日締切のタスクはありません）");
+  }
   return lines.join("\n");
 }
 function copyDailyReport(){
@@ -1351,7 +1454,7 @@ const BK_KEY="taskweb-backups-v1", BK_DATE="taskweb-lastbackup-v1";
 function autoBackup(){
   const k=todayStr(); try{ if(localStorage.getItem(BK_DATE)===k) return; }catch(e){ return; }
   let arr=[]; try{ arr=JSON.parse(localStorage.getItem(BK_KEY)||"[]"); }catch(e){ arr=[]; }
-  const snap={date:k, json:JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones})};
+  const snap={date:k, json:JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones,customCats:state.customCats,tabVisible:state.tabVisible})};
   arr.push(snap); while(arr.length>7) arr.shift();
   // 容量オーバー時は古い世代を捨てて再試行。成否が確定してからBK_DATEを記録（失敗時は翌回再挑戦）
   for(let attempt=0; attempt<7; attempt++){
@@ -1425,6 +1528,9 @@ function wire(){
   el("btnSettings").onclick=openSettings;
   el("setClose").onclick=()=>{ el("setOv").classList.remove("show"); syncModalLock(); };
   el("setOv").onclick=(e)=>{ if(e.target.id==="setOv"){ el("setOv").classList.remove("show"); syncModalLock(); } };
+  el("openTabMgr").onclick=()=>{ el("setOv").classList.remove("show"); openTabManager(); };
+  el("tabmgrClose").onclick=()=>{ el("tabmgrOv").classList.remove("show"); syncModalLock(); };
+  el("tabmgrOv").onclick=(e)=>{ if(e.target.id==="tabmgrOv"){ el("tabmgrOv").classList.remove("show"); syncModalLock(); } };
   el("btnVoice").onclick=startVoiceInput;
   el("btnSpeak").onclick=toggleSpeak;
   el("btnReport").onclick=copyDailyReport;
@@ -1492,7 +1598,7 @@ const Cloud = (function(){
   }
   function signOutNow(){ if(auth) auth.signOut(); }
   function docRef(){ return db.collection(COLL).doc(user.uid); }
-  function hasData(d){ return !!(d && ((d.tasks&&d.tasks.length) || (d.completions&&Object.keys(d.completions).length) || d.memo || (d.attendance&&Object.keys(d.attendance).length) || (d.completionLog&&d.completionLog.length) || (d.settings&&Object.keys(d.settings).length) || (d.templates&&d.templates.length) || d.activeTemplate || (d.milestones&&d.milestones.length))); }
+  function hasData(d){ return !!(d && ((d.tasks&&d.tasks.length) || (d.completions&&Object.keys(d.completions).length) || d.memo || (d.attendance&&Object.keys(d.attendance).length) || (d.completionLog&&d.completionLog.length) || (d.settings&&Object.keys(d.settings).length) || (d.templates&&d.templates.length) || d.activeTemplate || (d.milestones&&d.milestones.length) || (d.customCats&&d.customCats.length) || (d.tabVisible&&Object.keys(d.tabVisible).length))); }
   function onAuth(u){
     user=u; if(unsub){ unsub(); unsub=null; } renderCloud();
     if(!u){ reconciling=false; return; }
@@ -1513,6 +1619,9 @@ const Cloud = (function(){
     pendingUndo=null;               // リモートが正：保留中の「削除の取り消し」は無効化（重複・誤挿入を防ぐ）
     applyingRemote=true;
     try{
+      if(Array.isArray(doc.customCats)) state.customCats=JSON.parse(JSON.stringify(doc.customCats));   // 手動分類はdoc側にあれば反映
+      if(doc.tabVisible&&typeof doc.tabVisible==="object") state.tabVisible=doc.tabVisible;             // タブ表示も同様
+      try{ rebuildCats(); }catch(e){}                                                                  // タスク正規化(normTask→catKey)より前に分類を確定＝手動分類catが消えないように
       state.tasks=(doc.tasks||[]).map(normTask); state.completions=doc.completions||{};
       state.memo=doc.memo||""; state.hideDone=!!doc.hideDone;
       state.attendance=(doc.attendance&&typeof doc.attendance==="object")?JSON.parse(JSON.stringify(doc.attendance)):{};  // 別オブジェクト化（スナップショット共有を避ける）
@@ -1535,7 +1644,7 @@ const Cloud = (function(){
   }
   function onLocalChange(){ if(applyingRemote||reconciling||!user||!db) return; if(pushTimer) clearTimeout(pushTimer); pushTimer=setTimeout(pushNow,800); }
   function pushNow(){ pushTimer=null; if(!user||!db) return;
-    const doc={tasks:state.tasks, completions:state.completions, memo:state.memo, hideDone:state.hideDone, attendance:state.attendance, completionLog:state.completionLog, settings:state.settings, templates:state.templates, activeTemplate:state.activeTemplate, milestones:state.milestones, _updatedAt:new Date().toISOString()};
+    const doc={tasks:state.tasks, completions:state.completions, memo:state.memo, hideDone:state.hideDone, attendance:state.attendance, completionLog:state.completionLog, settings:state.settings, templates:state.templates, activeTemplate:state.activeTemplate, milestones:state.milestones, customCats:state.customCats, tabVisible:state.tabVisible, _updatedAt:new Date().toISOString()};
     docRef().set(doc).catch(function(e){ console.error("cloud push",e); try{ toast("クラウド同期に失敗（次の変更時に再送します）"); }catch(_){} });
   }
   return { init, status, signIn, signOut:signOutNow, onLocalChange, pushNow };
@@ -1571,6 +1680,9 @@ setInterval(function(){ try{ checkAutoTab(); }catch(e){} }, 30000);
 // 1秒ごと：アラーム発火チェック＋計測中タスクの表示更新
 setInterval(function(){
   let fired=false; try{ fired=checkAlarms(); }catch(e){}
+  const ds=todayStr();   // 日付が変わったら再描画（明日→今日のロールオーバー）。編集/ドラッグ中は保留し、描画したときだけ日付を進める＝取りこぼさない
+  if(!lastRenderDate){ lastRenderDate=ds; }
+  else if(lastRenderDate!==ds && !dragging && !swiping && editIndex<0){ lastRenderDate=ds; try{ render(); }catch(e){} }
   const anyRunning=state.tasks.some(t=>t.running);
   if((fired || anyRunning) && !dragging && !swiping){ try{ renderList(); }catch(e){} }
   // 編集シートを開いたまま計測中なら、タイマー表示だけ毎秒更新（シート全体は作り直さない）
