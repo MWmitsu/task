@@ -48,6 +48,41 @@
   .settxt{flex:1;}
   .setlabel{font-size:14px; color:var(--text);}
   .setdesc{font-size:11.5px; color:var(--dim); margin-top:2px; line-height:1.5;}
+  /* 設定・管理シート：固定ヘッダ＋スクロール本文＋固定フッタ（閉じるが常に見える） */
+  #setOv .sheet, #tabmgrOv .sheet{display:flex; flex-direction:column; overflow:hidden; padding:0;}
+  .sheet-head{flex:none; padding:16px 16px 10px;}
+  .sheet-head h2{margin:0;}
+  .sheet-body{flex:1 1 auto; overflow:auto; -webkit-overflow-scrolling:touch; padding:2px 16px 8px;}
+  .sheet-foot{flex:none; display:flex; align-items:center; gap:10px; padding:12px 16px calc(14px + env(safe-area-inset-bottom)); border-top:1px solid var(--line); background:var(--bg);}
+  .sheet-foot .grow{margin-right:auto;}
+  /* トグルスイッチ */
+  .toggle{flex:none; width:50px; height:28px; border-radius:14px; background:var(--panel2); border:none; position:relative; cursor:pointer; padding:0; transition:background .15s;}
+  .toggle.on{background:var(--green);}
+  .toggle .knob{position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%; background:#fff; box-shadow:0 1px 3px #0006; transition:left .15s;}
+  .toggle.on .knob{left:25px;}
+  /* 設定カード（ジャンル別） */
+  .setcard{background:#ffffff0d; border-radius:14px; padding:11px 14px 5px; margin:0 0 12px;}
+  html[data-theme="light"] .setcard{background:#1a132209;}
+  .setcard-h{font-size:13.5px; font-weight:700; margin:0 0 6px;}
+  .setrow2{display:flex; align-items:center; gap:12px; padding:9px 0; border-top:1px solid #ffffff12;}
+  html[data-theme="light"] .setrow2{border-top-color:#1a132212;}
+  .setcard .setrow2:first-of-type{border-top:none;}
+  /* Excel風テーブル（タブ・分類の管理） */
+  .tbl{width:100%; border-collapse:collapse; font-size:13.5px;}
+  .tbl th{font-size:11.5px; font-weight:700; color:var(--sub); text-align:left; padding:6px 6px; border-bottom:2px solid var(--line); position:sticky; top:0; background:var(--bg);}
+  .tbl td{padding:8px 6px; border-bottom:1px solid #ffffff12; vertical-align:middle;}
+  html[data-theme="light"] .tbl td{border-bottom-color:#1a132212;}
+  .tbl tr:nth-child(even) td{background:#ffffff07;}
+  html[data-theme="light"] .tbl tr:nth-child(even) td{background:#1a132206;}
+  .tbl .c-show{width:44px; text-align:center;} .tbl .c-color{width:40px; text-align:center;}
+  .tbl .c-kind{width:52px; color:var(--dim); font-size:12px;} .tbl .c-ops{width:96px; text-align:right; white-space:nowrap;}
+  .tbl input[type=checkbox]{width:20px; height:20px; accent-color:var(--green);}
+  .tbl input[type=color]{width:26px; height:26px; padding:0; border:1px solid var(--line); border-radius:6px; background:none; cursor:pointer;}
+  .cell-name{background:none; border:none; color:var(--text); font-size:13.5px; text-align:left; cursor:pointer; padding:2px 4px; border-radius:6px; max-width:100%;}
+  .cell-name:hover{background:#ffffff14;}
+  .dotc{display:inline-block; width:15px; height:15px; border-radius:50%; vertical-align:middle;}
+  .opbtn{background:none; border:none; color:var(--sub); font-size:14px; padding:3px 5px; cursor:pointer; border-radius:6px;}
+  .opbtn:hover{background:#ffffff14;} .opbtn.del:hover{background:#ff5a5226; color:#ff8a82;}
   .tplbar{display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:6px 0 2px;}
   .tpllab{font-size:13px; color:var(--sub);}
   .chip.ghost{background:transparent; color:var(--sub);}
@@ -285,19 +320,17 @@
 <!-- 設定シート -->
 <div class="ov" id="setOv">
   <div class="sheet">
-    <h2>⚙ 設定</h2>
-    <div class="help" style="margin:-4px 0 8px; font-size:11.5px; color:var(--dim)">オフにすると、その機能や表示を隠せます（いつでも戻せます）。</div>
-    <div id="setBody"></div>
-    <div class="actions" style="margin-top:14px"><button class="linkbtn" id="openTabMgr">🗂 タブ・分類の管理</button><button class="linkbtn" id="setClose">閉じる</button></div>
+    <div class="sheet-head"><h2>⚙ 設定</h2><div class="help" style="margin:4px 0 0; font-size:11.5px; color:var(--dim)">スイッチでオン/オフ。オフにすると、その機能や表示を隠せます（いつでも戻せます）。</div></div>
+    <div class="sheet-body" id="setBody"></div>
+    <div class="sheet-foot"><button class="linkbtn grow" id="openTabMgr">🗂 タブ・分類の管理</button><button class="linkbtn" id="setClose">閉じる</button></div>
   </div>
 </div>
 <!-- タブ・分類の管理シート -->
 <div class="ov" id="tabmgrOv">
   <div class="sheet">
-    <h2>🗂 タブ・分類の管理</h2>
-    <div class="help" style="margin:-4px 0 8px; font-size:11.5px; color:var(--dim)">タブの表示オンオフ／分類（手動）の追加・名前・色・並べ替え・削除。</div>
-    <div id="tabmgrBody"></div>
-    <div class="actions" style="margin-top:14px"><button class="linkbtn" id="tabmgrClose">閉じる</button></div>
+    <div class="sheet-head"><h2>🗂 タブ・分類の管理</h2><div class="help" style="margin:4px 0 0; font-size:11.5px; color:var(--dim)">チェックで表示オン/オフ。手動分類は「名前」「色」をクリックで変更、↑↓で並べ替え。</div></div>
+    <div class="sheet-body" id="tabmgrBody"></div>
+    <div class="sheet-foot"><button class="linkbtn grow" id="tabmgrAdd">＋ 分類を追加</button><button class="linkbtn" id="tabmgrClose">閉じる</button></div>
   </div>
 </div>
 <!-- グラフシート -->
@@ -1106,17 +1139,30 @@ function applySettings(){
   }catch(e){}
 }
 function openSettings(){ buildSettings(); el("setOv").classList.add("show"); syncModalLock(); }
+const SETTING_GROUP_INFO={ "表示":{icon:"👁",color:"var(--blue)"}, "機能":{icon:"⚙",color:"var(--green)"}, "動作":{icon:"🛠",color:"var(--orange)"}, "編集欄":{icon:"✏",color:"#c99ae6"}, "日報":{icon:"📋",color:"#e8a0c0"} };
+function makeToggle(on, onChange){
+  const t=document.createElement("button"); t.type="button"; t.className="toggle"+(on?" on":""); t.setAttribute("role","switch"); t.setAttribute("aria-checked", on?"true":"false");
+  const knob=document.createElement("span"); knob.className="knob"; t.appendChild(knob);
+  t.onclick=()=>{ const nv=!t.classList.contains("on"); t.classList.toggle("on",nv); t.setAttribute("aria-checked",nv?"true":"false"); onChange(nv); };
+  return t;
+}
 function buildSettings(){
-  const body=el("setBody"); body.innerHTML=""; let lastGroup="";
-  SETTING_DEFS.forEach(s=>{
-    if(s.group!==lastGroup){ const h=document.createElement("div"); h.className="setgroup"; h.textContent=s.group; body.appendChild(h); lastGroup=s.group; }
-    const row=document.createElement("label"); row.className="setrow";
-    const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=getSetting(s.key);
-    cb.onchange=()=>{ setSetting(s.key, cb.checked); };
-    const txt=document.createElement("div"); txt.className="settxt";
-    const lb=document.createElement("div"); lb.className="setlabel"; lb.textContent=s.label;
-    const ds=document.createElement("div"); ds.className="setdesc"; ds.textContent=s.desc;
-    txt.appendChild(lb); txt.appendChild(ds); row.appendChild(cb); row.appendChild(txt); body.appendChild(row);
+  const body=el("setBody"); body.innerHTML="";
+  const groups=[]; SETTING_DEFS.forEach(s=>{ if(groups.indexOf(s.group)<0) groups.push(s.group); });
+  groups.forEach(g=>{
+    const info=SETTING_GROUP_INFO[g]||{icon:"•",color:"var(--accent)"};
+    const card=document.createElement("div"); card.className="setcard";
+    const h=document.createElement("div"); h.className="setcard-h"; h.style.color=info.color; h.textContent=info.icon+"  "+g; card.appendChild(h);
+    SETTING_DEFS.filter(s=>s.group===g).forEach(s=>{
+      const row=document.createElement("div"); row.className="setrow2";
+      const txt=document.createElement("div"); txt.className="settxt";
+      const lb=document.createElement("div"); lb.className="setlabel"; lb.textContent=s.label;
+      const ds=document.createElement("div"); ds.className="setdesc"; ds.textContent=s.desc;
+      txt.appendChild(lb); txt.appendChild(ds);
+      const tg=makeToggle(getSetting(s.key), (v)=>setSetting(s.key,v));
+      row.appendChild(txt); row.appendChild(tg); card.appendChild(row);
+    });
+    body.appendChild(card);
   });
 }
 
@@ -1131,38 +1177,48 @@ function catHex(c){ c=String(c||""); return /^#[0-9a-fA-F]{6}$/.test(c)? c : "#8
 function openTabManager(){ buildTabManager(); el("tabmgrOv").classList.add("show"); syncModalLock(); }
 function buildTabManager(){
   const body=el("tabmgrBody"); body.innerHTML="";
-  const h1=document.createElement("div"); h1.className="setgroup"; h1.textContent="表示するタブ"; body.appendChild(h1);
+  const tbl=document.createElement("table"); tbl.className="tbl";
+  const thead=document.createElement("thead");
+  thead.innerHTML="<tr><th class='c-show'>表示</th><th>名前</th><th class='c-color'>色</th><th class='c-kind'>種類</th><th class='c-ops'>操作</th></tr>";
+  tbl.appendChild(thead);
+  const tb=document.createElement("tbody");
   tabDefs().forEach(f=>{
-    if(f.key==="all") return;
-    const row=document.createElement("label"); row.className="setrow";
-    const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=tabVisible(f.key);
-    cb.onchange=()=>{ setTabVisible(f.key, cb.checked); };
-    const txt=document.createElement("div"); txt.className="settxt";
-    const lb=document.createElement("div"); lb.className="setlabel"; lb.textContent=f.label;
-    txt.appendChild(lb); row.appendChild(cb); row.appendChild(txt); body.appendChild(row);
+    const isCat=(f.kind==="cat"); const isCustom=isCat && ["now","normal","any"].indexOf(f.key)<0;
+    const tr=document.createElement("tr");
+    // 表示
+    const tdShow=document.createElement("td"); tdShow.className="c-show";
+    if(f.key==="all"){ tdShow.textContent="🔒"; tdShow.title="「すべて」は常に表示"; }
+    else { const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=tabVisible(f.key); cb.onchange=()=>setTabVisible(f.key, cb.checked); tdShow.appendChild(cb); }
+    tr.appendChild(tdShow);
+    // 名前
+    const tdName=document.createElement("td");
+    if(isCustom){ const b=document.createElement("button"); b.className="cell-name"; b.textContent=f.label; b.title="クリックで名前を変更";
+      b.onclick=()=>{ const n=prompt("分類の名前", f.label); if(n&&n.trim()){ renameCustomCat(f.key,n); buildTabManager(); } }; tdName.appendChild(b); }
+    else { tdName.textContent=f.label; }
+    tr.appendChild(tdName);
+    // 色
+    const tdColor=document.createElement("td"); tdColor.className="c-color";
+    if(isCustom){ const ci=document.createElement("input"); ci.type="color"; ci.value=catHex(catInfo(f.key).color); ci.title="クリックで色を変更";
+      ci.onchange=()=>{ recolorCustomCat(f.key, ci.value); buildTabManager(); }; tdColor.appendChild(ci); }
+    else { const d=document.createElement("span"); d.className="dotc"; d.style.background=catInfo(f.key).color; tdColor.appendChild(d); }
+    tr.appendChild(tdColor);
+    // 種類
+    const tdKind=document.createElement("td"); tdKind.className="c-kind";
+    tdKind.textContent = f.kind==="all"?"全件" : f.kind==="date"?"日付" : (isCustom?"手動":"標準");
+    tr.appendChild(tdKind);
+    // 操作
+    const tdOps=document.createElement("td"); tdOps.className="c-ops";
+    if(isCustom){
+      const mk=(label,cls,fn)=>{ const b=document.createElement("button"); b.className="opbtn"+(cls?" "+cls:""); b.textContent=label; b.onclick=fn; return b; };
+      tdOps.appendChild(mk("↑","",()=>{ moveCustomCat(f.key,-1); buildTabManager(); }));
+      tdOps.appendChild(mk("↓","",()=>{ moveCustomCat(f.key,1); buildTabManager(); }));
+      tdOps.appendChild(mk("🗑","del",()=>{ if(confirm("「"+f.label+"」を削除します。中のタスクは「通常」に移ります。よろしいですか？")){ deleteCustomCat(f.key); buildTabManager(); } }));
+    } else { tdOps.textContent="—"; }
+    tr.appendChild(tdOps);
+    tb.appendChild(tr);
   });
-  const h2=document.createElement("div"); h2.className="setgroup"; h2.textContent="分類（手動で追加した項目）"; body.appendChild(h2);
-  const customs=CATS.filter(c=>c.custom);
-  if(!customs.length){ const e=document.createElement("div"); e.className="setdesc"; e.style.margin="2px 0 6px"; e.textContent="（まだありません。下の「＋ 分類を追加」から作れます）"; body.appendChild(e); }
-  customs.forEach(c=>{
-    const row=document.createElement("div"); row.style.cssText="display:flex;align-items:center;gap:6px;margin:5px 0;flex-wrap:wrap;";
-    const sw=document.createElement("span"); sw.style.cssText="width:14px;height:14px;border-radius:7px;flex:none;background:"+c.color+";";
-    const lb=document.createElement("span"); lb.textContent=c.label; lb.style.cssText="flex:1;min-width:60px;font-size:14px;word-break:break-word;";
-    row.appendChild(sw); row.appendChild(lb);
-    const mk=(label,fn)=>{ const b=document.createElement("button"); b.className="linkbtn"; b.style.cssText="padding:5px 8px;font-size:12px;"; b.textContent=label; b.onclick=fn; return b; };
-    row.appendChild(mk("名前",()=>{ const n=prompt("分類の名前", c.label); if(n&&n.trim()){ renameCustomCat(c.key,n); buildTabManager(); } }));
-    const colorWrap=document.createElement("label"); colorWrap.className="linkbtn"; colorWrap.style.cssText="padding:5px 8px;font-size:12px;position:relative;cursor:pointer;"; colorWrap.textContent="色";
-    const ci=document.createElement("input"); ci.type="color"; ci.value=catHex(c.color); ci.style.cssText="position:absolute;left:0;top:0;width:100%;height:100%;opacity:0;cursor:pointer;";
-    ci.onchange=()=>{ recolorCustomCat(c.key, ci.value); buildTabManager(); };
-    colorWrap.appendChild(ci); row.appendChild(colorWrap);
-    row.appendChild(mk("↑",()=>{ moveCustomCat(c.key,-1); buildTabManager(); }));
-    row.appendChild(mk("↓",()=>{ moveCustomCat(c.key,1); buildTabManager(); }));
-    row.appendChild(mk("削除",()=>{ if(confirm("「"+c.label+"」を削除します。中のタスクは「通常」に移ります。よろしいですか？")){ deleteCustomCat(c.key); buildTabManager(); } }));
-    body.appendChild(row);
-  });
-  const add=document.createElement("button"); add.className="linkbtn"; add.style.marginTop="8px"; add.textContent="＋ 分類を追加";
-  add.onclick=()=>{ const n=prompt("新しい分類の名前",""); if(n&&n.trim()){ addCustomCat(n,"#6fb0e6"); buildTabManager(); } };
-  body.appendChild(add);
+  tbl.appendChild(tb); body.appendChild(tbl);
+  if(!CATS.some(c=>c.custom)){ const e=document.createElement("div"); e.className="setdesc"; e.style.margin="10px 2px"; e.textContent="手動分類はまだありません。下の「＋ 分類を追加」から作れます。"; body.appendChild(e); }
 }
 
 // ==== 出退勤・休憩 ====
@@ -1529,6 +1585,7 @@ function wire(){
   el("setClose").onclick=()=>{ el("setOv").classList.remove("show"); syncModalLock(); };
   el("setOv").onclick=(e)=>{ if(e.target.id==="setOv"){ el("setOv").classList.remove("show"); syncModalLock(); } };
   el("openTabMgr").onclick=()=>{ el("setOv").classList.remove("show"); openTabManager(); };
+  el("tabmgrAdd").onclick=()=>{ const n=prompt("新しい分類の名前",""); if(n&&n.trim()){ addCustomCat(n,"#6fb0e6"); buildTabManager(); } };
   el("tabmgrClose").onclick=()=>{ el("tabmgrOv").classList.remove("show"); syncModalLock(); };
   el("tabmgrOv").onclick=(e)=>{ if(e.target.id==="tabmgrOv"){ el("tabmgrOv").classList.remove("show"); syncModalLock(); } };
   el("btnVoice").onclick=startVoiceInput;
