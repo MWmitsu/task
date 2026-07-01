@@ -424,7 +424,7 @@ function repeatKey(v){
 function subDone(t){ return (t.subs||[]).filter(s=>s.done).length; }
 
 // ---- state ----
-let state = { tasks:[], completions:{}, memo:"", hideDone:false, attendance:{}, completionLog:[], settings:{}, templates:[], activeTemplate:"", milestones:[], customCats:[], tabVisible:{} };
+let state = { tasks:[], completions:{}, memo:"", hideDone:false, attendance:{}, completionLog:[], settings:{}, templates:[], activeTemplate:"", milestones:[], customCats:[], tabVisible:{}, tabOrder:[] };
 let filter = "all", search = "", editIndex = -1, sort = "manual";
 let lastRenderDate = "";   // 日付変化検知（明日→今日のロールオーバー再描画）
 
@@ -446,6 +446,7 @@ function load(){
   try{ const raw=localStorage.getItem(LS_KEY); if(raw){ const o=JSON.parse(raw);
     state.customCats=Array.isArray(o.customCats)?o.customCats:[];
     state.tabVisible=(o.tabVisible&&typeof o.tabVisible==="object")?o.tabVisible:{};
+    state.tabOrder=Array.isArray(o.tabOrder)?o.tabOrder.map(String):[];
     rebuildCats();   // タスク正規化(normTask→catKey)より前に分類を確定＝手動分類catが「通常」に消えないように
     state.tasks=(o.tasks||[]).map(normTask); state.completions=o.completions||{}; state.memo=o.memo||""; state.hideDone=!!o.hideDone;
     state.attendance=(o.attendance&&typeof o.attendance==="object")?o.attendance:{};
@@ -574,9 +575,20 @@ function render(){
 function tabVisibleDefault(k){ if(k==="normal") return false; return true; }   // 標準/明日/手動は表示、通常タブのみ既定オフ
 function tabVisible(k){ if(k==="all") return true; if(state.tabVisible && (k in state.tabVisible)) return !!state.tabVisible[k]; return tabVisibleDefault(k); }
 function tabDefs(){
-  const list=[{key:"all",label:"すべて",kind:"all"},{key:"today",label:"今日",kind:"date"},{key:"tomorrow",label:"明日",kind:"date"}];
-  for(const c of CATS) list.push({key:c.key,label:c.label,kind:"cat"});
-  return list;
+  const base=[{key:"all",label:"すべて",kind:"all"},{key:"today",label:"今日",kind:"date"},{key:"tomorrow",label:"明日",kind:"date"}];
+  for(const c of CATS) base.push({key:c.key,label:c.label,kind:"cat"});
+  const byKey={}; base.forEach(d=>byKey[d.key]=d);
+  const ordered=[], used={};
+  for(const k of (state.tabOrder||[])){ if(byKey[k] && !used[k]){ ordered.push(byKey[k]); used[k]=true; } }   // 保存した並び順を優先
+  for(const d of base){ if(!used[d.key]){ ordered.push(d); used[d.key]=true; } }                            // 未登録は既定順で末尾
+  return ordered;
+}
+function moveTab(key, dir){
+  const order=tabDefs().map(f=>f.key);   // 現在の表示順を基準に入れ替え、全キーの並びを確定
+  const i=order.indexOf(key); if(i<0) return;
+  const j=i+dir; if(j<0||j>=order.length) return;
+  const tmp=order[i]; order[i]=order[j]; order[j]=tmp;
+  state.tabOrder=order; save(); render();
 }
 function visibleTabDefs(){ return tabDefs().filter(f=>tabVisible(f.key)); }
 function setTabVisible(k,v){ if(k==="all") return; if(!state.tabVisible) state.tabVisible={}; state.tabVisible[k]=!!v; save(); render(); }
@@ -1056,7 +1068,7 @@ function importCsv(text){
 
 // ---- JSON ----
 function exportJson(){
-  download("taskweb_"+stamp()+".json", JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones,customCats:state.customCats,tabVisible:state.tabVisible},null,2), "application/json");
+  download("taskweb_"+stamp()+".json", JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones,customCats:state.customCats,tabVisible:state.tabVisible,tabOrder:state.tabOrder},null,2), "application/json");
   toast("📤 JSONを書き出しました");
 }
 function exportSyncFile(){
@@ -1071,6 +1083,7 @@ function importJson(text){
   // タスク正規化(normTask→catKey)より前に、取り込む手動分類を先にマージ＆再構築＝取り込みタスクのcatが「通常」に消えないように
   if(o && Array.isArray(o.customCats)){ const keys=new Set((state.customCats||[]).map(c=>c&&c.key)); o.customCats.forEach(c=>{ if(c&&c.key&&!keys.has(c.key)){ state.customCats.push(c); keys.add(c.key); } }); }   // 名前(キー)でマージ
   if(o && o.tabVisible && typeof o.tabVisible==="object"){ for(const k in o.tabVisible){ if(!(k in state.tabVisible)) state.tabVisible[k]=!!o.tabVisible[k]; } }
+  if(o && Array.isArray(o.tabOrder) && !(state.tabOrder||[]).length){ state.tabOrder=o.tabOrder.map(String); }   // 並び順はローカル未設定なら取り込む
   try{ rebuildCats(); }catch(e){}
   const exist=new Set(state.tasks.map(t=>t.text)); let n=0;
   for(const raw of arr){ const t=normTask(raw); if(!t.text||exist.has(t.text)) continue; state.tasks.push(t); exist.add(t.text); n++; }
@@ -1171,7 +1184,7 @@ function newCatKey(){ let k; do{ k="cat_"+Math.random().toString(36).slice(2,10)
 function addCustomCat(label,color){ const lbl=String(label||"").trim(); if(!lbl) return null; const key=newCatKey(); if(!Array.isArray(state.customCats)) state.customCats=[]; state.customCats.push({key:key,label:lbl,color:color||"#8a82b0"}); rebuildCats(); save(); render(); return key; }
 function renameCustomCat(key,label){ const lbl=String(label||"").trim(); if(!lbl) return; (state.customCats||[]).forEach(c=>{ if(c.key===key) c.label=lbl; }); rebuildCats(); save(); render(); }
 function recolorCustomCat(key,color){ if(!color) return; (state.customCats||[]).forEach(c=>{ if(c.key===key) c.color=color; }); rebuildCats(); save(); render(); }
-function deleteCustomCat(key){ state.tasks.forEach(t=>{ if(t.cat===key) t.cat="normal"; }); state.customCats=(state.customCats||[]).filter(c=>c&&c.key!==key); if(state.tabVisible) delete state.tabVisible[key]; rebuildCats(); save(); render(); }
+function deleteCustomCat(key){ state.tasks.forEach(t=>{ if(t.cat===key) t.cat="normal"; }); state.customCats=(state.customCats||[]).filter(c=>c&&c.key!==key); if(state.tabVisible) delete state.tabVisible[key]; state.tabOrder=(state.tabOrder||[]).filter(k=>k!==key); rebuildCats(); save(); render(); }
 function moveCustomCat(key,dir){ const arr=state.customCats||[]; const i=arr.findIndex(c=>c&&c.key===key); if(i<0) return; const j=i+dir; if(j<0||j>=arr.length) return; const tmp=arr[i]; arr[i]=arr[j]; arr[j]=tmp; rebuildCats(); save(); render(); }
 function catHex(c){ c=String(c||""); return /^#[0-9a-fA-F]{6}$/.test(c)? c : "#8a82b0"; }   // <input type=color> 用（CSS var等は既定色）
 function openTabManager(){ buildTabManager(); el("tabmgrOv").classList.add("show"); syncModalLock(); }
@@ -1206,14 +1219,14 @@ function buildTabManager(){
     const tdKind=document.createElement("td"); tdKind.className="c-kind";
     tdKind.textContent = f.kind==="all"?"全件" : f.kind==="date"?"日付" : (isCustom?"手動":"標準");
     tr.appendChild(tdKind);
-    // 操作
+    // 操作（↑↓は全タブ対象・🗑は手動分類のみ）
     const tdOps=document.createElement("td"); tdOps.className="c-ops";
+    const mk=(label,cls,fn)=>{ const b=document.createElement("button"); b.className="opbtn"+(cls?" "+cls:""); b.textContent=label; b.onclick=fn; return b; };
+    tdOps.appendChild(mk("↑","",()=>{ moveTab(f.key,-1); buildTabManager(); }));
+    tdOps.appendChild(mk("↓","",()=>{ moveTab(f.key,1); buildTabManager(); }));
     if(isCustom){
-      const mk=(label,cls,fn)=>{ const b=document.createElement("button"); b.className="opbtn"+(cls?" "+cls:""); b.textContent=label; b.onclick=fn; return b; };
-      tdOps.appendChild(mk("↑","",()=>{ moveCustomCat(f.key,-1); buildTabManager(); }));
-      tdOps.appendChild(mk("↓","",()=>{ moveCustomCat(f.key,1); buildTabManager(); }));
       tdOps.appendChild(mk("🗑","del",()=>{ if(confirm("「"+f.label+"」を削除します。中のタスクは「通常」に移ります。よろしいですか？")){ deleteCustomCat(f.key); buildTabManager(); } }));
-    } else { tdOps.textContent="—"; }
+    }
     tr.appendChild(tdOps);
     tb.appendChild(tr);
   });
@@ -1510,7 +1523,7 @@ const BK_KEY="taskweb-backups-v1", BK_DATE="taskweb-lastbackup-v1";
 function autoBackup(){
   const k=todayStr(); try{ if(localStorage.getItem(BK_DATE)===k) return; }catch(e){ return; }
   let arr=[]; try{ arr=JSON.parse(localStorage.getItem(BK_KEY)||"[]"); }catch(e){ arr=[]; }
-  const snap={date:k, json:JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones,customCats:state.customCats,tabVisible:state.tabVisible})};
+  const snap={date:k, json:JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones,customCats:state.customCats,tabVisible:state.tabVisible,tabOrder:state.tabOrder})};
   arr.push(snap); while(arr.length>7) arr.shift();
   // 容量オーバー時は古い世代を捨てて再試行。成否が確定してからBK_DATEを記録（失敗時は翌回再挑戦）
   for(let attempt=0; attempt<7; attempt++){
@@ -1655,7 +1668,7 @@ const Cloud = (function(){
   }
   function signOutNow(){ if(auth) auth.signOut(); }
   function docRef(){ return db.collection(COLL).doc(user.uid); }
-  function hasData(d){ return !!(d && ((d.tasks&&d.tasks.length) || (d.completions&&Object.keys(d.completions).length) || d.memo || (d.attendance&&Object.keys(d.attendance).length) || (d.completionLog&&d.completionLog.length) || (d.settings&&Object.keys(d.settings).length) || (d.templates&&d.templates.length) || d.activeTemplate || (d.milestones&&d.milestones.length) || (d.customCats&&d.customCats.length) || (d.tabVisible&&Object.keys(d.tabVisible).length))); }
+  function hasData(d){ return !!(d && ((d.tasks&&d.tasks.length) || (d.completions&&Object.keys(d.completions).length) || d.memo || (d.attendance&&Object.keys(d.attendance).length) || (d.completionLog&&d.completionLog.length) || (d.settings&&Object.keys(d.settings).length) || (d.templates&&d.templates.length) || d.activeTemplate || (d.milestones&&d.milestones.length) || (d.customCats&&d.customCats.length) || (d.tabVisible&&Object.keys(d.tabVisible).length) || (d.tabOrder&&d.tabOrder.length))); }
   function onAuth(u){
     user=u; if(unsub){ unsub(); unsub=null; } renderCloud();
     if(!u){ reconciling=false; return; }
@@ -1678,6 +1691,7 @@ const Cloud = (function(){
     try{
       if(Array.isArray(doc.customCats)) state.customCats=JSON.parse(JSON.stringify(doc.customCats));   // 手動分類はdoc側にあれば反映
       if(doc.tabVisible&&typeof doc.tabVisible==="object") state.tabVisible=doc.tabVisible;             // タブ表示も同様
+      if(Array.isArray(doc.tabOrder)) state.tabOrder=doc.tabOrder.map(String);                          // タブ並び順も同様
       try{ rebuildCats(); }catch(e){}                                                                  // タスク正規化(normTask→catKey)より前に分類を確定＝手動分類catが消えないように
       state.tasks=(doc.tasks||[]).map(normTask); state.completions=doc.completions||{};
       state.memo=doc.memo||""; state.hideDone=!!doc.hideDone;
@@ -1701,7 +1715,7 @@ const Cloud = (function(){
   }
   function onLocalChange(){ if(applyingRemote||reconciling||!user||!db) return; if(pushTimer) clearTimeout(pushTimer); pushTimer=setTimeout(pushNow,800); }
   function pushNow(){ pushTimer=null; if(!user||!db) return;
-    const doc={tasks:state.tasks, completions:state.completions, memo:state.memo, hideDone:state.hideDone, attendance:state.attendance, completionLog:state.completionLog, settings:state.settings, templates:state.templates, activeTemplate:state.activeTemplate, milestones:state.milestones, customCats:state.customCats, tabVisible:state.tabVisible, _updatedAt:new Date().toISOString()};
+    const doc={tasks:state.tasks, completions:state.completions, memo:state.memo, hideDone:state.hideDone, attendance:state.attendance, completionLog:state.completionLog, settings:state.settings, templates:state.templates, activeTemplate:state.activeTemplate, milestones:state.milestones, customCats:state.customCats, tabVisible:state.tabVisible, tabOrder:state.tabOrder, _updatedAt:new Date().toISOString()};
     docRef().set(doc).catch(function(e){ console.error("cloud push",e); try{ toast("クラウド同期に失敗（次の変更時に再送します）"); }catch(_){} });
   }
   return { init, status, signIn, signOut:signOutNow, onLocalChange, pushNow };
