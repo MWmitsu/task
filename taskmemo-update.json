@@ -1,5 +1,5 @@
 {
-    "version":  "1.0.9",
+    "version":  "1.1.0",
     "exe":  "https://mwmitsu.github.io/task/TaskMemo.exe",
-    "notes":  "？ヘルプ（使い方ガイド）の内容を全機能を網羅する形に刷新・見やすいカード表示に"
+    "notes":  "右端にスライド収納できるモードを追加（設定→動作→🗄 右端にスライド収納。左端のつまみタブ／トレイ／Ctrl+Alt+Tでしまう・出す）"
 }
