@@ -289,6 +289,14 @@
       ・<b>widget→Web</b>：「📥 取り込み」でそのファイルを選択（重複はマージ）<br>
       ・<b>Web→widget</b>：「📤 書き出し」した taskweb-sync.json を Windows版のフォルダへ置く（次回起動で取り込み）
     </div>
+    <div class="help" style="margin:14px 0 8px"><b>🔗 ウィジェット自動連携（このPCのChrome/Edge）</b></div>
+    <div class="st" id="wlStatus">…</div>
+    <div class="actions" id="wlActions" style="margin-top:4px"></div>
+    <div class="help" style="margin-top:8px; font-size:11.5px; color:var(--dim)">
+      同期ファイルを一度選ぶと、このページを開いている間は<b>Windows版と自動で双方向同期</b>します（約5秒ごと）。
+      Googleログインと併用すれば <b>ウィジェット⇄このPC⇄スマホ</b> がつながります。<br>
+      ファイルの場所は、ウィジェットのトレイ「🌐 Web版と同期…」でコピーできます（ファイル選択画面の「ファイル名」欄に貼り付け）。
+    </div>
     <div class="help" style="margin:14px 0 10px">
       その他のファイル操作（バックアップ・CSV）：
     </div>
@@ -380,7 +388,7 @@
 <script>
 "use strict";
 const VERSION = "Web版 v1";
-const APP_VERSION = "1.1.10";   // 公開バージョン（publish-exe.ps1 が自動更新）
+const APP_VERSION = "1.2.0";   // 公開バージョン（publish-exe.ps1 が自動更新）
 const LS_KEY = "taskweb-data-v1";
 const BUILTIN_CATS = [
   {key:"now", label:"すぐ", color:"var(--now)"},
@@ -429,7 +437,8 @@ function repeatKey(v){
 function subDone(t){ return (t.subs||[]).filter(s=>s.done).length; }
 
 // ---- state ----
-let state = { tasks:[], completions:{}, memo:"", hideDone:false, attendance:{}, completionLog:[], settings:{}, templates:[], activeTemplate:"", milestones:[], customCats:[], tabVisible:{}, tabOrder:[] };
+let state = { tasks:[], completions:{}, memo:"", hideDone:false, attendance:{}, completionLog:[], settings:{}, templates:[], activeTemplate:"", milestones:[], customCats:[], tabVisible:{}, tabOrder:[], deleted:[] };
+// deleted = 削除の墓標 {text, at(ISO)}：ウィジェット/他端末との同期で「削除したタスクの復活」を防ぐ（14日で失効・最大300件）
 let filter = "all", search = "", editIndex = -1, sort = "manual";
 let lastRenderDate = "";   // 日付変化検知（明日→今日のロールオーバー再描画）
 
@@ -459,13 +468,29 @@ function load(){
     state.settings=(o.settings&&typeof o.settings==="object")?o.settings:{};
     state.templates=Array.isArray(o.templates)?o.templates:[];
     state.activeTemplate=typeof o.activeTemplate==="string"?o.activeTemplate:"";
-    state.milestones=Array.isArray(o.milestones)?o.milestones:[]; }
+    state.milestones=Array.isArray(o.milestones)?o.milestones:[];
+    state.deleted=Array.isArray(o.deleted)?o.deleted.filter(d=>d&&d.text).map(d=>({text:String(d.text),at:String(d.at||"")})):[]; }
   }catch(e){}
   try{ rebuildCats(); }catch(e){}
+  try{ pruneTombs(); }catch(e){}
   // 計測中タスクは再開時点から数え直す（アプリを閉じていた時間は実働に含めない）
   state.tasks.forEach(t=>{ if(t.running) t.runStart=Date.now(); });
 }
-function save(){ try{ checkpointTimers(); }catch(e){} let ok=true; try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ ok=false; try{ if(e&&(e.name==="QuotaExceededError"||/quota/i.test(e.message||""))) toast("保存できません（端末の保存容量がいっぱいです）"); }catch(_){} } if(ok){ try{ Cloud.onLocalChange(); }catch(e){} } }
+// ---- 削除の墓標（同期で“削除したタスクが復活”しないように） ----
+const TOMB_DAYS=14;
+function tombAlive(d){ const t=Date.parse((d&&d.at)||""); return isFinite(t) && t >= (Date.now()-TOMB_DAYS*86400000); }   // 日時不正は失効扱い（永久ブロックを作らない）
+function pruneTombs(){ state.deleted=(state.deleted||[]).filter(tombAlive).slice(-300); }
+function findTomb(text){ return (state.deleted||[]).find(d=>d && d.text===text && tombAlive(d)); }
+function clearTomb(text){ state.deleted=(state.deleted||[]).filter(d=>!(d && d.text===text)); }
+function adoptTomb(text, at){
+  const cur=(state.deleted||[]).find(d=>d && d.text===text);
+  const na=Date.parse(at||""), ca=cur?Date.parse(cur.at||""):NaN;
+  if(cur && isFinite(ca) && isFinite(na) && ca>=na) return false;   // 既に同等以上に新しい墓標を持っている
+  state.deleted=(state.deleted||[]).filter(d=>!(d && d.text===text));
+  state.deleted.push({text:String(text), at:String(at||new Date().toISOString())});
+  pruneTombs(); return true;
+}
+function save(){ try{ checkpointTimers(); }catch(e){} let ok=true; try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ ok=false; try{ if(e&&(e.name==="QuotaExceededError"||/quota/i.test(e.message||""))) toast("保存できません（端末の保存容量がいっぱいです）"); }catch(_){} } if(ok){ try{ Cloud.onLocalChange(); }catch(e){} try{ WidgetLink.onLocalChange(); }catch(e){} } }
 function normTask(t){
   const rawEst = (t.estimate!=null? t.estimate : (t.estimate_min!=null? t.estimate_min : 0));
   return {
@@ -483,6 +508,7 @@ function normTask(t){
     elapsed:Math.max(0,parseFloat(t.elapsed)||0),
     running:(!!t.running && (parseFloat(t.runStart)||0)>0),   // running なのに runStart 無し＝壊れた状態は停止扱い
     runStart:Math.max(0,parseFloat(t.runStart)||0),
+    addedAt:String(t.addedAt||""),   // 追加時刻（削除の墓標より新しければ“再追加”とみなして復活を許可）
   };
 }
 function catKey(v){ v=String(v==null?"":v); for(const c of CATS){ if(c.key===v||c.label===v) return c.key; } return "normal"; }
@@ -511,13 +537,14 @@ function estLabel(min){ min=parseInt(min,10)||0; if(min<=0) return ""; const h=M
 // ---- add / current defaults ----
 function curCat(){ return CATS.some(c=>c.key===filter)?filter:"normal"; }
 function curDue(){ if(filter==="today") return todayStr(); if(filter==="tomorrow") return fmtDate(addDays(today(),1)); return ""; }
-function newTask(text, applyTpl){ const t={text:text,done:false,due:curDue(),cat:curCat(),note:"",repeat:"",estimate:0,priority:"",tags:[],subs:[],alarm:"",alarmFired:false,elapsed:0,running:false,runStart:0}; if(applyTpl!==false){ try{ applyTemplate(t); }catch(e){} } return t; }
+function newTask(text, applyTpl){ const t={text:text,done:false,due:curDue(),cat:curCat(),note:"",repeat:"",estimate:0,priority:"",tags:[],subs:[],alarm:"",alarmFired:false,elapsed:0,running:false,runStart:0,addedAt:new Date().toISOString()}; if(applyTpl!==false){ try{ applyTemplate(t); }catch(e){} } return t; }
 function addTasks(){
   const raw=el("input").value; if(!raw.trim()) return; let added=0;
   for(const ln of raw.split(/\r\n|\r|\n/)){
     const tx=stripBullet(ln); if(!tx) continue;
     const hint=parseDueHint(tx); const useHint=(hint.due!=="" && hint.rest!=="");
     const nt=newTask(useHint?hint.rest:tx); if(useHint) nt.due=hint.due;
+    clearTomb(nt.text);   // 手で追加し直したら削除の墓標を解除（同期の誤ブロック防止）
     state.tasks.push(nt); added++;
   }
   if(added){ el("input").value=""; save(); render(); }
@@ -754,10 +781,13 @@ function deleteTaskUndoable(i){
   const t=state.tasks[i]; if(!t) return;
   const deleted={ task:t, index:i };             // 各削除を個別に捕捉（連続削除でも取り違えない）
   pendingUndo=deleted;
-  state.tasks.splice(i,1); save(); render();
+  state.tasks.splice(i,1);
+  try{ adoptTomb(t.text, new Date().toISOString()); }catch(e){}   // 墓標＝ウィジェット/他端末でも削除が伝わる
+  save(); render();
   toast("🗑 削除しました（タップで取り消し）", function(){
     if(pendingUndo!==deleted) return;            // クラウド更新等で無効化済みなら何もしない
     const at=Math.min(deleted.index, state.tasks.length);
+    try{ clearTomb(deleted.task.text); deleted.task.addedAt=new Date().toISOString(); }catch(e){}   // 取り消し＝墓標を解除し“今追加した”扱い
     state.tasks.splice(at,0,deleted.task); pendingUndo=null; save(); render();
   });
 }
@@ -1078,20 +1108,47 @@ function exportJson(){
 }
 function exportSyncFile(){
   // Windows版と共有する同期ファイル（タスク中心。設定/テンプレ等のUI設定は含めない）
-  const doc={ _source:"web", _updatedAt:new Date().toISOString(), tasks:state.tasks, completions:state.completions, memo:state.memo, attendance:state.attendance, completionLog:state.completionLog };
+  const doc={ _source:"web", _updatedAt:new Date().toISOString(), tasks:state.tasks, completions:state.completions, memo:state.memo, attendance:state.attendance, completionLog:state.completionLog, deleted:(state.deleted||[]) };
   download("taskweb-sync.json", JSON.stringify(doc,null,2), "application/json");
   toast("📤 taskweb-sync.json を書き出しました（Windows版のフォルダへ）");
 }
-function importJson(text){
-  let o; try{ o=JSON.parse(text.replace(/^﻿/,"")); }catch(e){ toast("JSONを読めませんでした"); return; }
+function importJson(text, opts){
+  const silent = !!(opts && opts.silent);   // ウィジェット自動連携のポーリングから呼ぶ時はトーストを出さない
+  let o; try{ o=JSON.parse(text.replace(/^﻿/,"")); }catch(e){ if(!silent) toast("JSONを読めませんでした"); return 0; }
   const arr = Array.isArray(o)? o : (o.tasks||[]);
   // タスク正規化(normTask→catKey)より前に、取り込む手動分類を先にマージ＆再構築＝取り込みタスクのcatが「通常」に消えないように
   if(o && Array.isArray(o.customCats)){ const keys=new Set((state.customCats||[]).map(c=>c&&c.key)); o.customCats.forEach(c=>{ if(c&&c.key&&!keys.has(c.key)){ state.customCats.push(c); keys.add(c.key); } }); }   // 名前(キー)でマージ
   if(o && o.tabVisible && typeof o.tabVisible==="object"){ for(const k in o.tabVisible){ if(!(k in state.tabVisible)) state.tabVisible[k]=!!o.tabVisible[k]; } }
   if(o && Array.isArray(o.tabOrder) && !(state.tabOrder||[]).length){ state.tabOrder=o.tabOrder.map(String); }   // 並び順はローカル未設定なら取り込む
   try{ rebuildCats(); }catch(e){}
+  const isSync = !!(o && (o._source==="widget"||o._source==="web"));   // 同期ドキュメント（バックアップJSONの取り込みには墓標ルールを適用しない）
+  if(isSync && Array.isArray(o.deleted)){
+    // 相手側の削除（墓標）を反映：ローカルの同名タスクが墓標より古ければ削除。新しければ“再追加”としてタスクを優先
+    let removedAny=false;
+    for(const d of o.deleted){
+      if(!d||!d.text||!tombAlive(d)) continue;
+      const idx=state.tasks.findIndex(t=>t.text===d.text);
+      if(idx>=0){
+        const ta=Date.parse(state.tasks[idx].addedAt||""); const da=Date.parse(d.at||"");
+        if(!isFinite(ta) || !isFinite(da) || ta<da){
+          if(editIndex===idx){ try{ closeEdit(); }catch(e){} } else if(editIndex>idx){ editIndex--; }
+          state.tasks.splice(idx,1); adoptTomb(d.text,d.at); removedAny=true;
+        }
+      } else { adoptTomb(d.text,d.at); }
+    }
+    if(removedAny){ try{ pendingUndo=null; }catch(e){} }   // 消したタスクの「取り消し」を無効化（誤復活防止）
+  }
   const exist=new Set(state.tasks.map(t=>t.text)); let n=0;
-  for(const raw of arr){ const t=normTask(raw); if(!t.text||exist.has(t.text)) continue; state.tasks.push(t); exist.add(t.text); n++; }
+  for(const raw of arr){
+    const t=normTask(raw); if(!t.text||exist.has(t.text)) continue;
+    if(isSync && t.done) continue;                        // 同期経由の完了済みは新規行にしない（「完了を消す」後の復活防止）
+    if(isSync){ const d=findTomb(t.text);
+      if(d){ const ta=Date.parse(t.addedAt||"");
+        if(isFinite(ta) && ta>Date.parse(d.at||"")){ clearTomb(t.text); }   // 墓標より新しい＝再追加→復活を許可
+        else continue; } }
+    state.tasks.push(t); exist.add(t.text); n++;
+  }
+  try{ pruneTombs(); }catch(e){}
   if(o && o.completions && typeof o.completions==="object"){ for(const k in o.completions){ state.completions[k]=Math.max(state.completions[k]||0, o.completions[k]||0); } }
   if(o && typeof o.memo==="string" && !state.memo) state.memo=o.memo;
   if(o && typeof o.hideDone==="boolean") state.hideDone=o.hideDone;
@@ -1101,7 +1158,9 @@ function importJson(text){
   if(o && Array.isArray(o.templates)){ const names=new Set(state.templates.map(t=>t.name)); o.templates.forEach(tpl=>{ if(tpl&&tpl.name&&!names.has(tpl.name)){ state.templates.push(tpl); names.add(tpl.name); } }); }
   if(o && Array.isArray(o.milestones)) state.milestones=Array.from(new Set(state.milestones.concat(o.milestones)));
   if(o && typeof o.activeTemplate==="string" && o.activeTemplate && (state.templates||[]).some(t=>t.name===o.activeTemplate)) state.activeTemplate=o.activeTemplate;
-  el("memo").value=state.memo; save(); applySettings(); try{ checkMilestones(); }catch(e){} render(); toast("📥 "+n+" 件を取り込みました");
+  el("memo").value=state.memo; save(); applySettings(); try{ checkMilestones(); }catch(e){} render();
+  if(!silent || n>0) toast("📥 "+n+" 件を取り込みました");
+  return n;
 }
 function stamp(){ const d=new Date(); return d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+"_"+pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds()); }
 function download(name,content,type){
@@ -1759,10 +1818,12 @@ const Cloud = (function(){
       if(Array.isArray(doc.templates)) state.templates=JSON.parse(JSON.stringify(doc.templates));
       if(typeof doc.activeTemplate==="string") state.activeTemplate=doc.activeTemplate;
       state.milestones=Array.from(new Set((state.milestones||[]).concat(Array.isArray(doc.milestones)?doc.milestones:[])));  // 解除済みマイルストーンは和集合
+      if(Array.isArray(doc.deleted)) state.deleted=doc.deleted.filter(d=>d&&d.text).map(d=>({text:String(d.text),at:String(d.at||"")}));  // 削除の墓標もクラウドに追従
       try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){}
     } finally { applyingRemote=false; }
     try{ applySettings(); }catch(e){}
     el("memo").value=state.memo; render();
+    try{ WidgetLink.onLocalChange(); }catch(e){}   // スマホ発の変更もウィジェット（同期ファイル）へ流す＝橋が止まらない
   }
   function subscribe(){
     unsub=docRef().onSnapshot(function(snap){
@@ -1773,11 +1834,110 @@ const Cloud = (function(){
   }
   function onLocalChange(){ if(applyingRemote||reconciling||!user||!db) return; if(pushTimer) clearTimeout(pushTimer); pushTimer=setTimeout(pushNow,800); }
   function pushNow(){ pushTimer=null; if(!user||!db) return;
-    const doc={tasks:state.tasks, completions:state.completions, memo:state.memo, hideDone:state.hideDone, attendance:state.attendance, completionLog:state.completionLog, settings:state.settings, templates:state.templates, activeTemplate:state.activeTemplate, milestones:state.milestones, customCats:state.customCats, tabVisible:state.tabVisible, tabOrder:state.tabOrder, _updatedAt:new Date().toISOString()};
+    const doc={tasks:state.tasks, completions:state.completions, memo:state.memo, hideDone:state.hideDone, attendance:state.attendance, completionLog:state.completionLog, settings:state.settings, templates:state.templates, activeTemplate:state.activeTemplate, milestones:state.milestones, customCats:state.customCats, tabVisible:state.tabVisible, tabOrder:state.tabOrder, deleted:(state.deleted||[]), _updatedAt:new Date().toISOString()};
     docRef().set(doc).catch(function(e){ console.error("cloud push",e); try{ toast("クラウド同期に失敗（次の変更時に再送します）"); }catch(_){} });
   }
   return { init, status, signIn, signOut:signOutNow, onLocalChange, pushNow };
 })();
+// ==== ウィジェット自動連携（File System Access API・このPCの taskweb-sync.json と双方向） ====
+const WidgetLink=(function(){
+  const DBN="tw-widgetlink", KEY="syncFile";
+  let handle=null, timer=null, wbTimer=null, lastText=null, writing=false, status="off"; // off|need-perm|on|unsupported
+  function supported(){ return !!window.showOpenFilePicker; }
+  function idb(){ return new Promise((res,rej)=>{ const r=indexedDB.open(DBN,1); r.onupgradeneeded=()=>{ r.result.createObjectStore("kv"); }; r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+  function idbSet(k,v){ return idb().then(db=>new Promise((res,rej)=>{ const tx=db.transaction("kv","readwrite"); tx.objectStore("kv").put(v,k); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); })); }
+  function idbGet(k){ return idb().then(db=>new Promise((res,rej)=>{ const tx=db.transaction("kv","readonly"); const rq=tx.objectStore("kv").get(k); rq.onsuccess=()=>res(rq.result); rq.onerror=()=>rej(rq.error); })); }
+  function idbDel(k){ return idb().then(db=>new Promise((res,rej)=>{ const tx=db.transaction("kv","readwrite"); tx.objectStore("kv").delete(k); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); })); }
+  async function ensurePerm(ask){
+    if(!handle) return false;
+    try{
+      let p=await handle.queryPermission({mode:"readwrite"});
+      if(p==="granted") return true;
+      if(!ask) return false;
+      p=await handle.requestPermission({mode:"readwrite"});
+      return p==="granted";
+    }catch(e){ return false; }
+  }
+  async function pick(){
+    if(!supported()) return;
+    let h=null;
+    try{ const r=await window.showOpenFilePicker({ types:[{description:"同期ファイル (taskweb-sync.json)", accept:{"application/json":[".json"]}}], multiple:false }); h=r&&r[0]; }
+    catch(e){ return; }   // キャンセル
+    if(!h) return;
+    handle=h;
+    try{ await idbSet(KEY,h); }catch(e){}
+    if(await ensurePerm(true)){ start(); toast("🔗 ウィジェットと連携しました（このページを開いている間、自動同期します）"); }
+    renderWidgetLink();
+  }
+  async function restore(){
+    if(!supported()){ status="unsupported"; renderWidgetLink(); return; }
+    try{ handle=(await idbGet(KEY))||null; }catch(e){ handle=null; }
+    if(!handle){ status="off"; renderWidgetLink(); return; }
+    if(await ensurePerm(false)){ start(); } else { status="need-perm"; }
+    renderWidgetLink();
+  }
+  async function reconnect(){ if(await ensurePerm(true)){ start(); } renderWidgetLink(); }
+  function start(){ status="on"; if(timer) clearInterval(timer); timer=setInterval(poll,5000); poll(); }
+  function stopLink(){ if(timer) clearInterval(timer); timer=null; handle=null; lastText=null; status="off"; try{ idbDel(KEY); }catch(e){} renderWidgetLink(); toast("連携を解除しました"); }
+  let pollErrs=0;
+  async function poll(){
+    if(!handle||writing||status!=="on") return;
+    if(dragging||swiping||editIndex>=0) return;   // 操作中はファイル反映を見送る（編集の取りこぼし防止）
+    try{
+      const f=await handle.getFile(); const text=await f.text();
+      pollErrs=0;
+      if(text===lastText) return;
+      lastText=text;
+      let o=null; try{ o=JSON.parse(text.replace(/^﻿/,"")); }catch(e){ return; }
+      if(o && o._source==="web") return;          // 自分（Web側）が書いた内容はスキップ
+      importJson(text,{silent:true});             // 追加マージ（save()内でクラウドpush・書き戻しも発火）
+    }catch(e){
+      console.error("widgetlink poll",e);
+      if(++pollErrs>=3){   // ファイル消失/移動/権限切れ：エラー連発のまま「オン」と偽らない
+        pollErrs=0; if(timer) clearInterval(timer); timer=null; status="need-perm"; renderWidgetLink();
+      }
+    }
+  }
+  async function writeBack(){
+    wbTimer=null;
+    if(!handle||status!=="on") return;
+    try{
+      writing=true;
+      const doc={ _source:"web", _updatedAt:new Date().toISOString(), tasks:state.tasks, completions:state.completions, memo:state.memo, attendance:state.attendance, completionLog:state.completionLog, deleted:(state.deleted||[]) };
+      const text=JSON.stringify(doc);
+      if(text!==lastText){
+        const w=await handle.createWritable(); await w.write(text); await w.close();
+        lastText=text;
+      }
+    }catch(e){
+      console.error("widgetlink write",e);
+      if(!wbTimer) wbTimer=setTimeout(writeBack,10000);   // OneDriveの一時ロック等：10秒後に再送（諦めると変更がウィジェットに届かない）
+    }
+    finally{ writing=false; }
+  }
+  function onLocalChange(){ if(status!=="on") return; if(wbTimer) clearTimeout(wbTimer); wbTimer=setTimeout(writeBack,1500); }
+  function getStatus(){ return status; }
+  return { supported, pick, reconnect, stop:stopLink, restore, onLocalChange, getStatus };
+})();
+function renderWidgetLink(){
+  const box=el("wlStatus"), act=el("wlActions"); if(!box||!act) return;
+  const st=WidgetLink.getStatus();
+  act.innerHTML="";
+  if(st==="unsupported"){ box.textContent="ウィジェット連携：このブラウザでは使えません（PCのChrome/Edgeで開いてください。スマホはGoogleログインで同期できます）"; return; }
+  if(st==="on"){
+    box.textContent=""; box.appendChild(document.createTextNode("ウィジェット連携："));
+    const b=document.createElement("b"); b.style.color="var(--green)"; b.textContent="オン"; box.appendChild(b);
+    box.appendChild(document.createTextNode("　このページを開いている間、自動同期中"));
+    act.appendChild(linkBtn("連携を解除",()=>WidgetLink.stop()));
+  } else if(st==="need-perm"){
+    box.textContent="ウィジェット連携：再接続が必要です（許可の確認が必要、またはファイルが見つかりません）";
+    act.appendChild(linkBtn("🔗 再接続する",()=>WidgetLink.reconnect()));
+    act.appendChild(linkBtn("解除",()=>WidgetLink.stop()));
+  } else {
+    box.textContent="ウィジェット連携：オフ — 同期ファイルを選ぶと自動同期が始まります";
+    act.appendChild(linkBtn("🔗 連携ファイルを選ぶ…",()=>WidgetLink.pick()));
+  }
+}
 function renderCloud(){
   const box=el("cloudStatus"), act=el("cloudActions"); if(!box||!act) return;
   const st=Cloud.status();
@@ -1803,6 +1963,7 @@ function renderCloud(){
 
 // ---- init ----
 applyTheme(getTheme()); load(); wire(); applySettings(); render(); Cloud.init();
+try{ WidgetLink.restore(); }catch(e){ console.error("widgetlink restore",e); }
 try{ autoBackup(); }catch(e){}
 try{ checkAutoTab(); }catch(e){}
 setInterval(function(){ try{ checkAutoTab(); }catch(e){} }, 30000);
