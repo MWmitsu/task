@@ -301,6 +301,7 @@
       その他のファイル操作（バックアップ・CSV）：
     </div>
     <div class="actions" style="margin-top:4px">
+      <button class="linkbtn" id="expLog">📝 操作ログを書き出し（テキスト）</button>
       <button class="linkbtn" id="expJson">📤 JSON書き出し（バックアップ）</button>
       <button class="linkbtn" id="impJson">📥 JSON / widget-data.json 取り込み</button>
     </div>
@@ -364,7 +365,7 @@
 <!-- 履歴シート -->
 <div class="ov" id="histOv">
   <div class="sheet">
-    <h2>🗂 完了の履歴</h2>
+    <h2>🗓 履歴（完了・出退勤・操作ログ）</h2>
     <div id="histBody"></div>
     <div class="actions" style="margin-top:14px"><button class="linkbtn" id="histClose">閉じる</button></div>
   </div>
@@ -388,7 +389,7 @@
 <script>
 "use strict";
 const VERSION = "Web版 v1";
-const APP_VERSION = "1.3.0";   // 公開バージョン（publish-exe.ps1 が自動更新）
+const APP_VERSION = "1.4.0";   // 公開バージョン（publish-exe.ps1 が自動更新）
 const LS_KEY = "taskweb-data-v1";
 const BUILTIN_CATS = [
   {key:"now", label:"すぐ", color:"var(--now)"},
@@ -437,8 +438,9 @@ function repeatKey(v){
 function subDone(t){ return (t.subs||[]).filter(s=>s.done).length; }
 
 // ---- state ----
-let state = { tasks:[], completions:{}, memo:"", hideDone:false, attendance:{}, completionLog:[], settings:{}, templates:[], activeTemplate:"", milestones:[], customCats:[], tabVisible:{}, tabOrder:[], deleted:[] };
+let state = { tasks:[], completions:{}, memo:"", hideDone:false, attendance:{}, completionLog:[], settings:{}, templates:[], activeTemplate:"", milestones:[], customCats:[], tabVisible:{}, tabOrder:[], deleted:[], activityLog:[] };
 // deleted = 削除の墓標 {text, at(ISO)}：ウィジェット/他端末との同期で「削除したタスクの復活」を防ぐ（14日で失効・最大300件）
+// activityLog = 操作ログ {ts,kind,text,min}：出退勤・タイマーのボタン操作記録（この端末ローカル・同期しない・最大2000件）
 let filter = "all", search = "", editIndex = -1, sort = "manual";
 let lastRenderDate = "";   // 日付変化検知（明日→今日のロールオーバー再描画）
 
@@ -469,7 +471,8 @@ function load(){
     state.templates=Array.isArray(o.templates)?o.templates:[];
     state.activeTemplate=typeof o.activeTemplate==="string"?o.activeTemplate:"";
     state.milestones=Array.isArray(o.milestones)?o.milestones:[];
-    state.deleted=Array.isArray(o.deleted)?o.deleted.filter(d=>d&&d.text).map(d=>({text:String(d.text),at:String(d.at||"")})):[]; }
+    state.deleted=Array.isArray(o.deleted)?o.deleted.filter(d=>d&&d.text).map(d=>({text:String(d.text),at:String(d.at||"")})):[];
+    state.activityLog=Array.isArray(o.activityLog)?o.activityLog.filter(a=>a&&a.ts&&a.kind).map(a=>({ts:String(a.ts),kind:String(a.kind),text:String(a.text||""),min:parseInt(a.min,10)||0})):[]; }
   }catch(e){}
   try{ rebuildCats(); }catch(e){}
   try{ pruneTombs(); }catch(e){}
@@ -589,6 +592,56 @@ function recordCompletion(t){
     state.completionLog.push({date:k, time:hm(new Date()), text:String(t.text||""), min:Math.round(elapsedSeconds(t)/60), cat:String(t.cat||""), est:parseInt(t.estimate,10)||0});
     while(state.completionLog.length>500) state.completionLog.shift();
   }
+}
+// ==== 操作ログ（端末ローカル：出退勤・タイマーのボタン操作をいつ押したか記録） ====
+const ACTIVITY_LABELS={ clockin:"🕘 出勤", clockout:"🕔 退勤", breakstart:"☕ 休憩開始", breakend:"▶ 休憩終了", attreset:"🔄 出退勤リセット",
+  timerstart:"▶ タイマー開始", timerstop:"■ タイマー停止", timercomplete:"✓ タイマーで完了", timerreset:"⟲ タイマーリセット", timeredit:"✎ 作業時間を手入力" };
+function activityLabel(kind){ return ACTIVITY_LABELS[kind]||String(kind); }
+function logActivity(kind, text, min){
+  try{
+    if(!Array.isArray(state.activityLog)) state.activityLog=[];
+    state.activityLog.push({ts:new Date().toISOString(), kind:String(kind), text:String(text||""), min:parseInt(min,10)||0});
+    while(state.activityLog.length>2000) state.activityLog.shift();
+  }catch(e){}
+}
+function formatActivityLine(e){
+  let ts=String(e.ts||""); try{ const d=new Date(e.ts); ts=pad(d.getMonth()+1)+"/"+pad(d.getDate())+" "+pad(d.getHours())+":"+pad(d.getMinutes()); }catch(_){}
+  let line=ts+"  "+activityLabel(e.kind);
+  if(e.text) line+="："+e.text;
+  if((parseInt(e.min,10)||0)>0) line+="（⏱"+estLabel(e.min)+"）";
+  return line;
+}
+// ==== 月・履歴 ====
+let histMonth = "", histTab = "done";   // 履歴表示中の月(yyyy-MM・空=当月)・タブ
+function curMonth(){ return (histMonth&&/^\d{4}-\d{2}$/.test(histMonth))?histMonth:fmtDate(today()).slice(0,7); }
+function monthShift(mk, delta){ const p=mk.split("-"); const d=new Date(parseInt(p[0],10), parseInt(p[1],10)-1+delta, 1); return d.getFullYear()+"-"+pad(d.getMonth()+1); }
+function monthLabel(mk){ const p=mk.split("-"); return parseInt(p[0],10)+"年"+parseInt(p[1],10)+"月"; }
+function makeMonthlyReport(mk){
+  mk=mk||curMonth();
+  const entries=(state.completionLog||[]).filter(e=>String(e.date||"").startsWith(mk)).slice().sort((a,b)=>((a.date||"")<(b.date||"")?-1:1));
+  let sum=0; entries.forEach(e=>sum+=parseInt(e.min,10)||0);
+  const byDate={}; entries.forEach(e=>{ const d=e.date; if(!byDate[d]) byDate[d]={n:0,min:0}; byDate[d].n++; byDate[d].min+=parseInt(e.min,10)||0; });
+  let workDays=0, workMin=0;
+  if(state.attendance){ Object.keys(state.attendance).forEach(k=>{ if(!k.startsWith(mk)) return; const a=state.attendance[k]; if(!(a&&a.in)) return; workDays++; const w=attWorked(a); if(w!=null) workMin+=w; }); }
+  const lines=["📅 月報 "+monthLabel(mk)];
+  lines.push("完了 "+entries.length+"件 / 合計作業 "+(sum>0?estLabel(sum):"0分"));
+  if(getSetting("attendance") && workDays>0) lines.push("🕐 出勤 "+workDays+"日 / 実働 "+(workMin>0?estLabel(workMin):"0分"));
+  lines.push(""); lines.push("― 日別 ―");
+  const dks=Object.keys(byDate).sort();
+  if(!dks.length) lines.push("（この月の完了はありません）");
+  else dks.forEach(d=>{ const v=byDate[d]; const md=d.slice(5).replace("-","/"); const suf=v.min>0?(" / ⏱"+estLabel(v.min)):""; lines.push("・"+md+"　完了"+v.n+"件"+suf); });
+  return lines.join("\n");
+}
+function makeActivityText(){
+  const lines=["操作ログ（"+fmtDate(new Date())+" 書き出し・"+(state.activityLog||[]).length+"件）",""];
+  (state.activityLog||[]).slice().sort((a,b)=>((a.ts||"")<(b.ts||"")?1:-1)).forEach(e=>lines.push(formatActivityLine(e)));
+  if(!(state.activityLog||[]).length) lines.push("（記録はまだありません）");
+  return lines.join("\n");
+}
+function exportActivityLog(){
+  const txt=makeActivityText();
+  download("sousa_log_"+stamp()+".txt", txt, "text/plain");
+  toast("📝 操作ログを書き出しました");
 }
 function todayCount(){ return state.completions[todayStr()]||0; }
 function streak(){
@@ -826,8 +879,8 @@ function rescheduleRecurring(t){
 function elapsedSeconds(t){ let e=parseFloat(t.elapsed)||0; if(t.running && t.runStart>0) e += (Date.now()-t.runStart)/1000; return e; }
 function fmtElapsed(sec){ sec=Math.max(0,Math.floor(sec)); const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60; return h>0? (h+":"+pad(m)+":"+pad(s)) : (pad(m)+":"+pad(s)); }
 function checkpointTimers(){ const now=Date.now(); state.tasks.forEach(t=>{ if(t.running && t.runStart>0){ t.elapsed=(parseFloat(t.elapsed)||0)+(now-t.runStart)/1000; t.runStart=now; } }); }
-function startTimer(t){ state.tasks.forEach(x=>{ if(x.running && x.runStart>0){ x.elapsed=(parseFloat(x.elapsed)||0)+(Date.now()-x.runStart)/1000; } x.running=false; x.runStart=0; }); t.running=true; t.runStart=Date.now(); save(); render(); }
-function stopTimer(t){ if(t.running && t.runStart>0){ t.elapsed=(parseFloat(t.elapsed)||0)+(Date.now()-t.runStart)/1000; } t.running=false; t.runStart=0; save(); render(); }
+function startTimer(t){ state.tasks.forEach(x=>{ if(x.running && x.runStart>0){ x.elapsed=(parseFloat(x.elapsed)||0)+(Date.now()-x.runStart)/1000; } x.running=false; x.runStart=0; }); t.running=true; t.runStart=Date.now(); logActivity("timerstart",t.text,0); save(); render(); }
+function stopTimer(t){ if(t.running && t.runStart>0){ t.elapsed=(parseFloat(t.elapsed)||0)+(Date.now()-t.runStart)/1000; } t.running=false; t.runStart=0; logActivity("timerstop",t.text,Math.round(elapsedSeconds(t)/60)); save(); render(); }
 // ---- 作業時間の手入力（タイマーを使わず直接セット）: 1:30 / 90分 / 1.5時間 / 90 を分に解釈 ----
 function parseWorkTime(s){
   s=String(s||"").trim(); if(!s) return null;
@@ -845,7 +898,7 @@ function setWorkTime(t, text){
   if(mins===null){ toast("作業時間は 1:30 / 90分 / 90 のように入力してください"); return; }
   const newElapsed=mins*60;
   if(!t.running && Math.abs((parseFloat(t.elapsed)||0)-newElapsed)<1) return;   // 変化なし
-  t.elapsed=newElapsed; t.running=false; t.runStart=0; save(); render();
+  t.elapsed=newElapsed; t.running=false; t.runStart=0; logActivity("timeredit",t.text,mins); save(); render();
 }
 function fmtHM(sec){ const total=Math.max(0,Math.round(sec/60)); const h=Math.floor(total/60), m=total%60; return h+":"+pad(m); }
 // ---- アラーム（リマインダー通知） ----
@@ -936,7 +989,7 @@ function buildEditSheet(){
     const tbtn=document.createElement("button"); tbtn.className="chip"+(t.running?" on":""); tbtn.textContent=t.running?"■ 停止":"▶ 開始";
     tbtn.onclick=()=>{ if(t.running) stopTimer(t); else startTimer(t); buildEditSheet(); }; trow.appendChild(tbtn);
     if(elapsedSeconds(t)>0 && !t.running){ const rb=document.createElement("button"); rb.className="chip"; rb.textContent="リセット";
-      rb.onclick=()=>{ t.elapsed=0; t.running=false; t.runStart=0; commitEdit(); }; trow.appendChild(rb); }
+      rb.onclick=()=>{ t.elapsed=0; t.running=false; t.runStart=0; logActivity("timerreset",t.text,0); commitEdit(); }; trow.appendChild(rb); }
     s.appendChild(trow);
     // 作業時間を手入力（▶/■を使わず直接セット）
     const mrow=document.createElement("div"); mrow.style.cssText="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;";
@@ -1177,6 +1230,7 @@ const SETTING_DEFS = [
   {key:"memo",       label:"📝 メモ欄",         group:"表示", def:true,  desc:"下部の自由メモ欄を表示します。"},
   {key:"attendance", label:"🕘 出退勤・休憩",    group:"機能", def:false, desc:"出勤→休憩→退勤を打刻。実働を計算し日報に反映します。"},
   {key:"report",     label:"📋 日報ボタン",      group:"機能", def:false, desc:"今日の完了・作業時間・出退勤をまとめてコピーします。"},
+  {key:"monthly",    label:"📅 月報ボタン",      group:"機能", def:false, desc:"今月の完了・作業時間・出勤日数・日別内訳をまとめてコピーします（履歴は🗓ボタンから）。"},
   {key:"speak",      label:"🔊 読み上げボタン",   group:"機能", def:false, desc:"未完了タスクを音声で読み上げます。"},
   {key:"voice",      label:"🎤 音声入力ボタン",   group:"機能", def:false, desc:"マイクで話してタスクを入力します（対応ブラウザのみ）。"},
   {key:"graph",      label:"📊 グラフ・傾向ボタン", group:"機能", def:false, desc:"完了の推移と傾向（時間帯・分類・見積精度）を表示します。"},
@@ -1318,19 +1372,20 @@ function punchAttendance(){
       if(a.breakStart){ a.breakMin=(parseInt(a.breakMin,10)||0)+minutesBetween(a.breakStart,now); delete a.breakStart; }
       a.out=now; if(k!==today){ a.inDate=k; a.outDate=today; }   // 日跨ぎは日付を残して実働を正しく計算
     }
+    logActivity("clockout","",0);
     toast("🕔 退勤 "+now+"　"+attSummary(state.attendance[openK]));
   } else { // 出勤
     const k=today; let a=state.attendance[k]||{};
     if(a.in&&a.out){ toast("本日は退勤済み　"+attSummary(a)); return; }
-    a.in=now; state.attendance[k]=a; toast("🕘 出勤 "+now);
+    a.in=now; state.attendance[k]=a; logActivity("clockin","",0); toast("🕘 出勤 "+now);
   }
   save(); applyAttendanceUI();
 }
 function punchBreak(){
   const k=attOpenKey(); if(!k){ toast("出勤中のみ休憩できます"); return; }
   const a=state.attendance[k]; const now=hm(new Date());
-  if(a.breakStart){ a.breakMin=(parseInt(a.breakMin,10)||0)+minutesBetween(a.breakStart,now); delete a.breakStart; toast("▶ 再開 "+now); }
-  else { a.breakStart=now; toast("☕ 休憩 "+now); }
+  if(a.breakStart){ const bm=minutesBetween(a.breakStart,now); a.breakMin=(parseInt(a.breakMin,10)||0)+bm; delete a.breakStart; logActivity("breakend","",bm); toast("▶ 再開 "+now); }
+  else { a.breakStart=now; logActivity("breakstart","",0); toast("☕ 休憩 "+now); }
   state.attendance[k]=a; save(); applyAttendanceUI();
 }
 function attReset(){
@@ -1339,12 +1394,12 @@ function attReset(){
   const ak=attActiveKey(); if(state.attendance[ak]) targets.add(ak);
   if(!targets.size){ toast("リセットする出退勤がありません"); return; }
   if(!confirm("出退勤の記録をリセットしますか？（この打刻を消去します）")) return;
-  targets.forEach(kk=>delete state.attendance[kk]); save(); applyAttendanceUI(); toast("🕘 出退勤をリセットしました");
+  targets.forEach(kk=>delete state.attendance[kk]); logActivity("attreset","",0); save(); applyAttendanceUI(); toast("🕘 出退勤をリセットしました");
 }
 function applyAttendanceUI(){
   const bar=el("attbar"); if(!bar) return;
-  const showAtt=getSetting("attendance"), showRep=getSetting("report");
-  if(!showAtt && !showRep){ bar.style.display="none"; bar.innerHTML=""; return; }
+  const showAtt=getSetting("attendance"), showRep=getSetting("report"), showMon=getSetting("monthly");
+  if(!showAtt && !showRep && !showMon){ bar.style.display="none"; bar.innerHTML=""; return; }
   bar.style.display=""; bar.innerHTML="";
   const mk=(txt,fn,cls)=>{ const b=document.createElement("button"); b.className="attbtn"+(cls?" "+cls:""); b.textContent=txt; b.onclick=fn; bar.appendChild(b); return b; };
   if(showAtt){
@@ -1356,6 +1411,12 @@ function applyAttendanceUI(){
     mk("⟳ リセット", attReset, "ghost").title="出退勤の記録をリセット";           // リセット
   }
   if(showRep) mk("📋 日報", copyDailyReport).title="今日の完了・作業時間・出退勤をコピー";   // 日報（同じ行にまとめる）
+  if(getSetting("monthly")) mk("📅 月報", copyMonthlyReport, "ghost").title="今月の完了・作業時間・出勤日数・日別内訳をコピー";
+}
+function copyMonthlyReport(){
+  const mk=fmtDate(today()).slice(0,7);   // 月報ボタンは常に“当月”。履歴ビューアの表示月(histMonth)には触れない
+  const rep=makeMonthlyReport(mk); const done=()=>toast("📅 月報をコピーしました");
+  try{ if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(rep).then(done,()=>fallbackCopy(rep,done)); } else fallbackCopy(rep,done); }catch(e){ fallbackCopy(rep,done); }
 }
 function openAttendanceEdit(){
   const k=attActiveKey(); const a=(state.attendance&&state.attendance[k])||{};
@@ -1514,21 +1575,38 @@ function buildCalendar(){
 }
 
 // ==== 完了の履歴・アーカイブ ====
-function openHistory(){ buildHistory(); el("histOv").classList.add("show"); syncModalLock(); }
+function openHistory(){ if(!/^\d{4}-\d{2}$/.test(histMonth)) histMonth=curMonth(); buildHistory(); el("histOv").classList.add("show"); syncModalLock(); }
+function historyRows(mk){
+  // その月の 完了/出退勤/操作ログ の行テキストを返す
+  const done=(state.completionLog||[]).filter(e=>String(e.date||"").startsWith(mk)).slice().sort((a,b)=>(((a.date||"")+(a.time||""))<((b.date||"")+(b.time||""))?-1:1))
+    .map(e=>{ const md=String(e.date||"").slice(5).replace("-","/"); const suf=(parseInt(e.min,10)>0)?("（⏱"+estLabel(e.min)+"）"):""; return md+" "+(e.time||"")+"  ✓ "+e.text+suf; });
+  const att=[]; if(state.attendance){ Object.keys(state.attendance).filter(k=>k.startsWith(mk)).sort().forEach(k=>{ const a=state.attendance[k]; if(!a) return; const md=k.slice(5).replace("-","/"); att.push(md+"  "+attSummary(a)); }); }
+  const log=(state.activityLog||[]).filter(e=>String(e.ts||"").startsWith(mk)).slice().sort((a,b)=>((a.ts||"")<(b.ts||"")?1:-1)).map(formatActivityLine);
+  return {done, att, log};
+}
 function buildHistory(){
   const body=el("histBody"); if(!body) return; body.innerHTML="";
-  const log=(state.completionLog||[]).slice().sort((a,b)=>(((a.date||"")+(a.time||"")) < ((b.date||"")+(b.time||"")) ? 1 : -1));  // 新しい順（各日付内も新しい順）
-  if(!log.length){ const e=document.createElement("div"); e.className="help"; e.textContent="完了の履歴はまだありません。タスクを完了すると記録されます。"; body.appendChild(e); return; }
-  const byDate={}; log.forEach(e=>{ (byDate[e.date]=byDate[e.date]||[]).push(e); });
-  Object.keys(byDate).sort((a,b)=>a<b?1:-1).forEach(date=>{
-    const ents=byDate[date]; let sum=0; ents.forEach(x=>sum+=parseInt(x.min,10)||0);
-    const h=document.createElement("div"); h.className="setgroup"; h.textContent=date+"（"+ents.length+"件"+(sum>0?" / "+estLabel(sum):"")+"）"; body.appendChild(h);
-    ents.forEach(e=>{ const r=document.createElement("div"); r.className="hist-item";
-      const tm=document.createElement("span"); tm.className="hist-time"; tm.textContent=e.time||"";
-      const tx=document.createElement("span"); tx.className="hist-text"; tx.textContent="✓ "+e.text;
-      const mn=document.createElement("span"); mn.className="hist-min"; mn.textContent=(parseInt(e.min,10)>0)?("⏱"+estLabel(e.min)):"";
-      r.appendChild(tm); r.appendChild(tx); r.appendChild(mn); body.appendChild(r); });
-  });
+  const mk=curMonth();
+  // ヘッダ（月切替）
+  const head=document.createElement("div"); head.style.cssText="display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:8px;";
+  const prev=document.createElement("button"); prev.className="chip ghost"; prev.textContent="◀"; prev.onclick=()=>{ histMonth=monthShift(mk,-1); buildHistory(); };
+  const ttl=document.createElement("b"); ttl.textContent=monthLabel(mk); ttl.style.fontSize="15px";
+  const next=document.createElement("button"); next.className="chip ghost"; next.textContent="▶"; next.onclick=()=>{ histMonth=monthShift(mk,1); buildHistory(); };
+  head.appendChild(prev); head.appendChild(ttl); head.appendChild(next); body.appendChild(head);
+  // タブ
+  const tabs=document.createElement("div"); tabs.className="chips"; tabs.style.marginBottom="8px";
+  [["done","完了履歴"],["att","出退勤"],["log","操作ログ"]].forEach(a=>{ const b=document.createElement("button"); b.className="chip"+(histTab===a[0]?" on":""); b.textContent=a[1]; b.onclick=()=>{ histTab=a[0]; buildHistory(); }; tabs.appendChild(b); });
+  body.appendChild(tabs);
+  // 本体
+  const rows=historyRows(mk)[histTab]||[];
+  if(!rows.length){ const e=document.createElement("div"); e.className="help"; e.textContent="この月の記録はありません。"; body.appendChild(e); }
+  else rows.forEach(line=>{ const r=document.createElement("div"); r.className="hist-item"; r.style.display="block"; r.textContent=line; body.appendChild(r); });
+  // コピー
+  const foot=document.createElement("div"); foot.className="actions"; foot.style.marginTop="10px";
+  const cp=document.createElement("button"); cp.className="linkbtn"; cp.textContent="📋 この表示をコピー";
+  cp.onclick=()=>{ const label=(histTab==="done"?"完了履歴":histTab==="att"?"出退勤":"操作ログ"); const txt=monthLabel(mk)+" "+label+"\n"+rows.join("\n"); const done=()=>toast("📋 コピーしました");
+    try{ if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(txt).then(done,()=>fallbackCopy(txt,done)); } else fallbackCopy(txt,done); }catch(e){ fallbackCopy(txt,done); } };
+  foot.appendChild(cp); body.appendChild(foot);
 }
 
 // ==== テンプレート（新規タスクの既定値） ====
@@ -1732,7 +1810,7 @@ function wire(){
   el("histOv").onclick=(e)=>{ if(e.target.id==="histOv"){ el("histOv").classList.remove("show"); syncModalLock(); } };
   el("restoreBackup").onclick=restoreLatestBackup;
   warmVoices();
-  el("expCsv").onclick=exportCsv; el("expJson").onclick=exportJson;
+  el("expCsv").onclick=exportCsv; el("expJson").onclick=exportJson; { const b=el("expLog"); if(b) b.onclick=exportActivityLog; }
   el("syncExport").onclick=exportSyncFile; el("syncImport").onclick=()=>pickFile("json");
   el("impCsv").onclick=()=>pickFile("csv"); el("impJson").onclick=()=>pickFile("json");
   el("filePick").addEventListener("change",function(){
