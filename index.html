@@ -389,7 +389,7 @@
 <script>
 "use strict";
 const VERSION = "Web版 v1";
-const APP_VERSION = "1.4.0";   // 公開バージョン（publish-exe.ps1 が自動更新）
+const APP_VERSION = "1.4.1";   // 公開バージョン（publish-exe.ps1 が自動更新）
 const LS_KEY = "taskweb-data-v1";
 const BUILTIN_CATS = [
   {key:"now", label:"すぐ", color:"var(--now)"},
@@ -1205,7 +1205,11 @@ function importJson(text, opts){
   if(o && o.completions && typeof o.completions==="object"){ for(const k in o.completions){ state.completions[k]=Math.max(state.completions[k]||0, o.completions[k]||0); } }
   if(o && typeof o.memo==="string" && !state.memo) state.memo=o.memo;
   if(o && typeof o.hideDone==="boolean") state.hideDone=o.hideDone;
-  if(o && o.attendance && typeof o.attendance==="object"){ for(const k in o.attendance){ if(!state.attendance[k]) state.attendance[k]=o.attendance[k]; } }
+  if(o && o.attendance && typeof o.attendance==="object"){ for(const k in o.attendance){ const inc=o.attendance[k]; if(!inc) continue; const cur=state.attendance[k];
+      if(!cur){ state.attendance[k]=inc; }                                   // 新規キーは従来どおり追加
+      else if(inc.out && !cur.out){ state.attendance[k]=inc; }               // 相手が退勤済(open→closed)→丸ごと反映（進行中breakStartを持ち込まない）
+      else if((!!inc.out)===(!!cur.out)){ state.attendance[k]=Object.assign({},cur,inc); }  // 同状態は情報の多い方へ（out/inDate/outDate/breakMin/breakStart 等の更新を取りこぼさない）
+    } }
   if(o && Array.isArray(o.completionLog)) state.completionLog=mergeLog(state.completionLog, o.completionLog);
   if(o && o.settings && typeof o.settings==="object"){ for(const k in o.settings){ if(!(k in state.settings)) state.settings[k]=o.settings[k]; } }
   if(o && Array.isArray(o.templates)){ const names=new Set(state.templates.map(t=>t.name)); o.templates.forEach(tpl=>{ if(tpl&&tpl.name&&!names.has(tpl.name)){ state.templates.push(tpl); names.add(tpl.name); } }); }
@@ -1355,7 +1359,10 @@ function buildTabManager(){
 
 // ==== 出退勤・休憩 ====
 function attOpenKey(){ if(!state.attendance) return null; let best=null; for(const k in state.attendance){ const a=state.attendance[k]; if(a&&a.in&&!a.out){ if(best===null||k>best) best=k; } } return best; }   // 開いている（出勤中・未退勤）セッションの日付キー。日付が変わっても継続
-function attActiveKey(){ return attOpenKey() || todayStr(); }
+function attActiveKey(){ const ok=attOpenKey(); if(ok) return ok;   // 開セッション優先（日付跨いでも継続）
+  const t=todayStr(), A=state.attendance||{}; let bk=null;   // 開セッションが無くても「今日退勤した日跨ぎセッション」は前日キーに残る→それを当日の表示キーに（退勤直後に未打刻へ戻る不具合の対策）
+  for(const kk in A){ const a=A[kk]; if(a&&a.out&&a.outDate===t){ if(bk===null||kk>bk) bk=kk; } }
+  return bk||t; }
 function attActive(){ const k=attActiveKey(); if(!state.attendance) state.attendance={}; return state.attendance[k]||null; }
 function attToday(){ return attActive(); }   // 互換：開いているセッションがあれば日付に関わらずそれを返す（自動リセットしない）
 function minutesBetween(a,b){ const m1=/^(\d{1,2}):(\d{2})$/.exec(String(a||"")), m2=/^(\d{1,2}):(\d{2})$/.exec(String(b||"")); if(!m1||!m2) return 0; let d=(+m2[1]*60+ +m2[2])-(+m1[1]*60+ +m1[2]); if(d<0) d+=1440; return d; }
