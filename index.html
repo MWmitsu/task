@@ -389,7 +389,7 @@
 <script>
 "use strict";
 const VERSION = "Web版 v1";
-const APP_VERSION = "1.4.1";   // 公開バージョン（publish-exe.ps1 が自動更新）
+const APP_VERSION = "1.4.2";   // 公開バージョン（publish-exe.ps1 が自動更新）
 const LS_KEY = "taskweb-data-v1";
 const BUILTIN_CATS = [
   {key:"now", label:"すぐ", color:"var(--now)"},
@@ -558,9 +558,9 @@ function matchFilter(t){
   if(state.hideDone && t.done) return false;
   let ok;
   if(filter==="all") ok = true;
-  else if(filter==="today") ok = (!t.done && dueLEToday(t.due));
-  else if(filter==="tomorrow") ok = (!t.done && dueEqTomorrow(t.due));
-  else ok = (!t.done && t.cat===filter && !dueLEToday(t.due) && !dueEqTomorrow(t.due));   // 分類タブ：締切が今日以下/明日のものは日付ビューへ譲る（排他）
+  else if(filter==="today") ok = dueLEToday(t.due);
+  else if(filter==="tomorrow") ok = dueEqTomorrow(t.due);
+  else ok = (t.cat===filter && !dueLEToday(t.due) && !dueEqTomorrow(t.due));   // 分類タブ：締切が今日以下/明日のものは日付ビューへ譲る（排他）。完了の表示/非表示は先頭のhideDoneで一元管理（各タブでトグルが効くように!t.doneは付けない）
   if(!ok) return false;
   if(search){ const hay=((t.text||"")+" "+(t.note||"")+" "+(t.tags||[]).join(" ")).toLowerCase();
     if(!hay.includes(search.toLowerCase())) return false; }

@@ -5,7 +5,7 @@
 //   これを上げないと、PWA導入済み端末は install 時に焼いた古い index.html を掃除できず、
 //   オフライン/フォールバック時に旧版を配信し続ける（例: 日跨ぎ休憩で出勤が消える旧バグの再燃）。
 //   版を上げると activate で旧キャッシュを削除し、install で最新 SHELL を取り直す。
-const CACHE = "taskweb-v1.4.1";
+const CACHE = "taskweb-v1.4.2";
 const SHELL = [
   "./",
   "./index.html",
