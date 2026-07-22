@@ -1,0 +1,6 @@
+{
+    "version":  "1.0.0",
+    "exe":  "https://mwmitsu.github.io/task/ProjectMemo.exe",
+    "sha256":  "7E1978B2FB0563BB2D4E36EE812DB1561CC4A6A40CD79D4E410170CBE9FA86D8",
+    "notes":  "初版リリース。Backlog風のプロジェクト・課題管理（課題4状態/優先度/分類/マイルストーン/親子/コメント・カンバンD\u0026D・ガント・バーンダウン）。タスクメモと双方向連携（課題送信＋完了の自動反映）。"
+}
