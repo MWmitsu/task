@@ -1,0 +1,6 @@
+{
+    "version":  "1.0.0",
+    "exe":  "https://mwmitsu.github.io/task/ZaisekiMemo.exe",
+    "sha256":  "39622263AEB39ECCAF57348A7745C0D3113F9EAD25C991C75BA6047233A9407D",
+    "notes":  "初版。在席確認（ノック）・離席の自動検知・前面アプリの記録・独自の出退勤・履歴/書き出し・TaskMemo 連携（Web版/スマホから閲覧）・初回同意画面・自動更新"
+}
