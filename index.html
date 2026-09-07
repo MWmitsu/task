@@ -390,7 +390,7 @@
 <script>
 "use strict";
 const VERSION = "Web版 v1";
-const APP_VERSION = "1.5.2";   // 公開バージョン（publish-exe.ps1 が自動更新）
+const APP_VERSION = "1.6.0";   // 公開バージョン（publish-exe.ps1 が自動更新）
 const LS_KEY = "taskweb-data-v1";
 const BUILTIN_CATS = [
   {key:"now", label:"すぐ", color:"var(--now)"},
@@ -439,8 +439,9 @@ function repeatKey(v){
 function subDone(t){ return (t.subs||[]).filter(s=>s.done).length; }
 
 // ---- state ----
-let state = { tasks:[], completions:{}, memo:"", hideDone:false, attendance:{}, completionLog:[], settings:{}, templates:[], activeTemplate:"", milestones:[], customCats:[], tabVisible:{}, tabOrder:[], deleted:[], activityLog:[], workLog:[], appUsage:{} };
+let state = { tasks:[], completions:{}, memo:"", hideDone:false, attendance:{}, completionLog:[], settings:{}, templates:[], activeTemplate:"", milestones:[], customCats:[], tabVisible:{}, tabOrder:[], deleted:[], deletedCats:[], activityLog:[], workLog:[], appUsage:{} };
 // deleted = 削除の墓標 {text, at(ISO)}：ウィジェット/他端末との同期で「削除したタスクの復活」を防ぐ（14日で失効・最大300件）
+// deletedCats = 手動分類の削除墓標 {key, at(ISO)}：相手側の customCats に同キーが残っていても復活させない（60日で整理・最大100件・C10）
 // activityLog = 操作ログ {ts,kind,text,min}：出退勤・タイマーのボタン操作記録（この端末ローカル・同期しない・最大2000件）
 // workLog = 在席ログ {ts,kind:'away'|'knock_ok'|'knock_miss',text,min}／appUsage = {日付:{アプリ名:分}}：
 //   Windowsウィジェットだけが生成し、Webは閲覧のみ。activityLogと形は同じだが真逆に「同期対象」＝
@@ -476,12 +477,16 @@ function load(){
     state.activeTemplate=typeof o.activeTemplate==="string"?o.activeTemplate:"";
     state.milestones=Array.isArray(o.milestones)?o.milestones:[];
     state.deleted=Array.isArray(o.deleted)?o.deleted.filter(d=>d&&d.text).map(d=>({text:String(d.text),at:String(d.at||"")})):[];
+    state.deletedCats=normDeadCats(o.deletedCats);
     state.activityLog=Array.isArray(o.activityLog)?o.activityLog.filter(a=>a&&a.ts&&a.kind).map(a=>({ts:String(a.ts),kind:String(a.kind),text:String(a.text||""),min:parseInt(a.min,10)||0})):[];
     state.workLog=Array.isArray(o.workLog)?o.workLog.filter(a=>a&&a.ts&&a.kind).map(a=>({ts:String(a.ts),kind:String(a.kind),text:String(a.text||""),min:parseInt(a.min,10)||0})):[];
     state.appUsage=(o.appUsage&&typeof o.appUsage==="object")?o.appUsage:{}; }
   }catch(e){}
   try{ rebuildCats(); }catch(e){}
   try{ pruneTombs(); }catch(e){}
+  try{ pruneDeadCats(); }catch(e){}
+  try{ state.completionLog=mergeLog(state.completionLog, []); }catch(e){}   // 同キー重複行を LWW 規則で1行に正規化（C11'）
+  try{ rebuildTaskSigs(); }catch(e){}   // 署名キャッシュは刻印なしで再構築（S1）
   // 計測中タスクは再開時点から数え直す（アプリを閉じていた時間は実働に含めない）
   state.tasks.forEach(t=>{ if(t.running) t.runStart=Date.now(); });
 }
@@ -499,7 +504,31 @@ function adoptTomb(text, at){
   state.deleted.push({text:String(text), at:String(at||new Date().toISOString())});
   pruneTombs(); return true;
 }
-function save(){ try{ checkpointTimers(); }catch(e){} let ok=true; try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ ok=false; try{ if(e&&(e.name==="QuotaExceededError"||/quota/i.test(e.message||""))) toast("保存できません（端末の保存容量がいっぱいです）"); }catch(_){} } if(ok){ try{ Cloud.onLocalChange(); }catch(e){} try{ WidgetLink.onLocalChange(); }catch(e){} } }
+// ---- 手動分類の削除墓標（C10）：{key, at}。標準キー（now/normal/any）は対象外 ----
+const DEADCAT_DAYS=60;
+function normDeadCats(arr){ return (Array.isArray(arr)?arr:[]).filter(d=>d&&d.key&&!BUILTIN_CATS.some(b=>b.key===String(d.key))).map(d=>({key:String(d.key),at:String(d.at||"")})); }
+function pruneDeadCats(){ const lim=Date.now()-DEADCAT_DAYS*86400000; state.deletedCats=normDeadCats(state.deletedCats).filter(d=>{ const t=Date.parse(d.at||""); return isFinite(t)&&t>=lim; }).slice(-100); }
+function deadCatKeys(){ return new Set(normDeadCats(state.deletedCats).map(d=>d.key)); }
+function addDeadCat(key, at){
+  key=String(key||""); if(!key||BUILTIN_CATS.some(b=>b.key===key)) return false;
+  if(!Array.isArray(state.deletedCats)) state.deletedCats=[];
+  if(state.deletedCats.some(d=>d&&d.key===key)) return false;
+  state.deletedCats.push({key:key, at:String(at||new Date().toISOString())}); pruneDeadCats(); return true;
+}
+function applyDeadCat(key){   // ローカルに該当分類が残っていれば削除（タスクは「通常」へ・タブ表示/並びからも除去）。削除したら true
+  key=String(key||""); if(!key||!(state.customCats||[]).some(c=>c&&c.key===key)) return false;
+  (state.tasks||[]).forEach(t=>{ if(t&&t.cat===key) t.cat="normal"; });
+  state.customCats=state.customCats.filter(c=>c&&c.key!==key);
+  if(state.tabVisible) delete state.tabVisible[key];
+  state.tabOrder=(state.tabOrder||[]).filter(k=>k!==key);
+  return true;
+}
+function adoptDeadCats(theirs){   // 相手の墓標を和集合で取り込み、該当分類をローカルからも削除
+  let changed=false;
+  normDeadCats(theirs).forEach(d=>{ if(applyDeadCat(d.key)) changed=true; if(addDeadCat(d.key, d.at)) changed=true; });
+  return changed;
+}
+function save(){ try{ checkpointTimers(); }catch(e){} try{ stampUpdatedAt(); }catch(e){} let ok=true; try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){ ok=false; try{ if(e&&(e.name==="QuotaExceededError"||/quota/i.test(e.message||""))) toast("保存できません（端末の保存容量がいっぱいです）"); }catch(_){} } if(ok){ try{ Cloud.onLocalChange(); }catch(e){} try{ WidgetLink.onLocalChange(); }catch(e){} } }
 function normTask(t){
   const rawEst = (t.estimate!=null? t.estimate : (t.estimate_min!=null? t.estimate_min : 0));
   return {
@@ -518,7 +547,34 @@ function normTask(t){
     running:(!!t.running && (parseFloat(t.runStart)||0)>0),   // running なのに runStart 無し＝壊れた状態は停止扱い
     runStart:Math.max(0,parseFloat(t.runStart)||0),
     addedAt:String(t.addedAt||""),   // 追加時刻（削除の墓標より新しければ“再追加”とみなして復活を許可）
+    updatedAt:String(t.updatedAt||""),   // 同期対象フィールド(SYNC_FIELDS)を最後に変えた時刻(ISO)。''=未刻印（旧版データ）
   };
+}
+// ---- 変更の伝播（S1）：本文一致の既存タスクへ、updatedAt が新しい側の同期対象フィールドを採用 ----
+const SYNC_FIELDS=["done","due","cat","note","priority","estimate","tags","repeat","subs","alarm"];   // alarmFired/elapsed/running/runStart/addedAt は含めない（端末ローカルの計測状態）
+function taskSig(t){ return JSON.stringify(SYNC_FIELDS.map(k=>(t&&t[k]!==undefined)?t[k]:null)); }
+let taskSigs=new Map();   // キー＝本文+"\u0000"+同名内の出現順（リスト順・0始まり）→署名（C8: 同名タスクが複数あっても取り違えない）。保存時に署名が変わったタスクだけ updatedAt を刻印（load/applyRemote 直後は刻印なしで再構築＝更新直後に全件が「今」にならない）
+function sigKeyOf(t){ const arr=state.tasks||[]; const i=arr.indexOf(t); let n=0; for(let j=0;j<i;j++){ const x=arr[j]; if(x&&x.text===t.text) n++; } return String(t.text)+"\u0000"+n; }
+function rebuildTaskSigs(){ taskSigs=new Map(); const seen=new Map(); (state.tasks||[]).forEach(t=>{ if(!t||!t.text) return; const n=seen.get(t.text)||0; seen.set(t.text,n+1); taskSigs.set(t.text+"\u0000"+n, taskSig(t)); }); }
+function stampUpdatedAt(){
+  const now=new Date().toISOString(); const next=new Map(); const seen=new Map();
+  (state.tasks||[]).forEach(t=>{ if(!t||!t.text) return; const n=seen.get(t.text)||0; seen.set(t.text,n+1); const key=t.text+"\u0000"+n; const sig=taskSig(t); const prev=taskSigs.get(key);
+    if(prev===undefined ? !t.updatedAt : prev!==sig) t.updatedAt=now;   // 未知のキー（新規/改名）は未刻印なら今、既知は署名が変わった時だけ
+    next.set(key, sig); });
+  taskSigs=next;
+}
+function mergeTaskFields(local, remote){
+  // 相手の updatedAt が読める かつ（自分が未刻印 or 相手が新しい）ときだけ SYNC_FIELDS をコピー。往復で跳ね返さないよう署名キャッシュも更新
+  if(!local||!remote) return false;
+  const ra=Date.parse(remote.updatedAt||""); if(!isFinite(ra)) return false;   // 相手が旧版（updatedAt 無し）→従来どおり何もしない
+  const la=Date.parse(local.updatedAt||""); if(isFinite(la) && ra<=la) return false;
+  SYNC_FIELDS.forEach(k=>{ const v=remote[k]; local[k]=(v&&typeof v==="object")?JSON.parse(JSON.stringify(v)):v; });
+  if(local.done && local.running){   // C9: 相手の done=true を採用したらローカルの計測は確定して停止（toggleDone/stopTimer と同じ計算。alarmFired は触らない）
+    if((parseFloat(local.runStart)||0)>0) local.elapsed=(parseFloat(local.elapsed)||0)+(Date.now()-local.runStart)/1000;
+    local.running=false; local.runStart=0;
+  }
+  local.updatedAt=String(remote.updatedAt); taskSigs.set(sigKeyOf(local), taskSig(local));
+  return true;
 }
 function catKey(v){ v=String(v==null?"":v); for(const c of CATS){ if(c.key===v||c.label===v) return c.key; } return "normal"; }
 function catInfo(k){ return CATS.find(c=>c.key===k)||CATS[1]; }
@@ -546,7 +602,7 @@ function estLabel(min){ min=parseInt(min,10)||0; if(min<=0) return ""; const h=M
 // ---- add / current defaults ----
 function curCat(){ return CATS.some(c=>c.key===filter)?filter:"normal"; }
 function curDue(){ if(filter==="today") return todayStr(); if(filter==="tomorrow") return fmtDate(addDays(today(),1)); return ""; }
-function newTask(text, applyTpl){ const t={text:text,done:false,due:curDue(),cat:curCat(),note:"",repeat:"",estimate:0,priority:"",tags:[],subs:[],alarm:"",alarmFired:false,elapsed:0,running:false,runStart:0,addedAt:new Date().toISOString()}; if(applyTpl!==false){ try{ applyTemplate(t); }catch(e){} } return t; }
+function newTask(text, applyTpl){ const t={text:text,done:false,due:curDue(),cat:curCat(),note:"",repeat:"",estimate:0,priority:"",tags:[],subs:[],alarm:"",alarmFired:false,elapsed:0,running:false,runStart:0,addedAt:new Date().toISOString(),updatedAt:new Date().toISOString()}; if(applyTpl!==false){ try{ applyTemplate(t); }catch(e){} } return t; }
 function addTasks(){
   const raw=el("input").value; if(!raw.trim()) return; let added=0;
   for(const ln of raw.split(/\r\n|\r|\n/)){
@@ -584,20 +640,51 @@ function dueInfo(s){
 // ---- completion stats ----
 function hm(d){ return pad(d.getHours())+":"+pad(d.getMinutes()); }
 function logKey(e){ return (e&&e.date||"")+"|"+(e&&e.time||"")+"|"+(e&&e.text||""); }
+function logLive(e){ return !!(e && !e.void); }        // void:true ＝ 取り消された完了（C11。行は残して同期で復活させない）
+function liveLog(){ return (state.completionLog||[]).filter(logLive); }   // 表示・集計は非void行だけ
+function normLogRow(e){ const c=Object.assign({}, e); if(c.void) c.void=true; else delete c.void; if(c.at!=null && c.at!=="") c.at=String(c.at); else delete c.at; return c; }   // void は true か無し、at は文字列か無し
+function pickLogRow(x,y){
+  // C11': 同キー2行のどちらの状態を採るか。両方 at あり→at が新しい方（同時刻は void 優先）／片方だけ at→そちら／両方無し（旧版行）→void 優先（どちらも live なら先勝ち）
+  const tx=Date.parse(x.at||""), ty=Date.parse(y.at||"");
+  if(isFinite(tx) && isFinite(ty)){ if(tx>ty) return x; if(ty>tx) return y; return x.void?x:(y.void?y:x); }
+  if(isFinite(tx)) return x;
+  if(isFinite(ty)) return y;
+  return x.void?x:(y.void?y:x);
+}
 function mergeLog(a,b){
-  const seen=new Set(), out=[];
-  (a||[]).concat(b||[]).forEach(e=>{ if(!e) return; const k=logKey(e); if(seen.has(k)) return; seen.add(k); out.push(e); });
+  // C11': (date|time|text) キーで一意（同キーは1行に畳む）。行ごとに LWW＝pickLogRow の規則で void 状態を決める（widget Merge-Sync-Data と同一規則）。ローカル内の同キー重複行も同じ規則で1行に正規化
+  const idx=new Map(), out=[];
+  (a||[]).concat(b||[]).forEach(e=>{ if(!e) return; const k=logKey(e); const c=normLogRow(e); const i=idx.get(k);
+    if(i===undefined){ idx.set(k,out.length); out.push(c); return; }
+    out[i]=pickLogRow(out[i], c); });
   out.sort((x,y)=>(((x.date||"")+(x.time||""))<((y.date||"")+(y.time||""))?-1:1));
   while(out.length>500) out.shift();
   return out;
 }
+function recountRecentCompletions(){
+  // C11': completions[date] の再計算窓は「今日〜6日前」の7日間（widget $recent=today.AddDays(-6)・-ge と同一）。マージ後 completionLog の非void行の件数（0なら除去）。それより古い日は触らない（max のまま）
+  const cnt={}; liveLog().forEach(e=>{ const d=String(e.date||""); cnt[d]=(cnt[d]||0)+1; });
+  for(let i=0;i<7;i++){ const k=fmtDate(addDays(today(),-i)); if(cnt[k]>0) state.completions[k]=cnt[k]; else delete state.completions[k]; }
+}
+function revertCompletion(t){
+  // C11': 完了取消。当日・同本文の「最新の非void行」に void:true・at=now を付け completions[今日] を1減らす（0未満にしない）。行が無ければ何もしない＝過去日の実績は触らない
+  const k=todayStr(), tx=String(t&&t.text||""); const log=state.completionLog||[];
+  for(let i=log.length-1;i>=0;i--){ const e=log[i]; if(e && !e.void && String(e.date||"")===k && String(e.text||"")===tx){
+    e.void=true; e.at=new Date().toISOString(); const v=(state.completions[k]||0)-1; if(v<=0) delete state.completions[k]; else state.completions[k]=v; return true; } }
+  return false;
+}
 function recordCompletion(t){
-  const k=todayStr(); state.completions[k]=(state.completions[k]||0)+1;
-  if(t){
-    if(!Array.isArray(state.completionLog)) state.completionLog=[];
-    state.completionLog.push({date:k, time:hm(new Date()), text:String(t.text||""), min:Math.round(elapsedSeconds(t)/60), cat:String(t.cat||""), est:parseInt(t.estimate,10)||0});
-    while(state.completionLog.length>500) state.completionLog.shift();
-  }
+  const k=todayStr();
+  if(!t){ state.completions[k]=(state.completions[k]||0)+1; return; }
+  if(!Array.isArray(state.completionLog)) state.completionLog=[];
+  const now=new Date();
+  const row={date:k, time:hm(now), text:String(t.text||""), min:Math.round(elapsedSeconds(t)/60), cat:String(t.cat||""), est:parseInt(t.estimate,10)||0, at:now.toISOString()};
+  // C11': 同キー (date|time|text) の行が既にあれば新しい行は追加しない。void なら復活（void=false・at=now）、live なら何もしない（同じ分の同本文2回目は1回として数える＝completions も加算しない）
+  const cur=state.completionLog.find(e=>e&&logKey(e)===logKey(row));
+  if(cur){ if(cur.void){ delete cur.void; cur.at=row.at; cur.min=row.min; cur.cat=row.cat; cur.est=row.est; state.completions[k]=(state.completions[k]||0)+1; } return; }
+  state.completions[k]=(state.completions[k]||0)+1;
+  state.completionLog.push(row);
+  while(state.completionLog.length>500) state.completionLog.shift();
 }
 // ==== 操作ログ（端末ローカル：出退勤・タイマーのボタン操作をいつ押したか記録） ====
 const ACTIVITY_LABELS={ clockin:"🕘 出勤", clockout:"🕔 退勤", breakstart:"☕ 休憩開始", breakend:"▶ 休憩終了", attreset:"🔄 出退勤リセット",
@@ -654,7 +741,7 @@ function monthShift(mk, delta){ const p=mk.split("-"); const d=new Date(parseInt
 function monthLabel(mk){ const p=mk.split("-"); return parseInt(p[0],10)+"年"+parseInt(p[1],10)+"月"; }
 function makeMonthlyReport(mk){
   mk=mk||curMonth();
-  const entries=(state.completionLog||[]).filter(e=>String(e.date||"").startsWith(mk)).slice().sort((a,b)=>((a.date||"")<(b.date||"")?-1:1));
+  const entries=liveLog().filter(e=>String(e.date||"").startsWith(mk)).slice().sort((a,b)=>((a.date||"")<(b.date||"")?-1:1));
   let sum=0; entries.forEach(e=>sum+=parseInt(e.min,10)||0);
   const byDate={}; entries.forEach(e=>{ const d=e.date; if(!byDate[d]) byDate[d]={n:0,min:0}; byDate[d].n++; byDate[d].min+=parseInt(e.min,10)||0; });
   let workDays=0, workMin=0;
@@ -868,7 +955,7 @@ function startGesture(e, i, row, immediateDrag){
     if(lpTimer){ clearTimeout(lpTimer); lpTimer=null; }
     row.removeEventListener("pointermove",onMove); row.removeEventListener("pointerup",onUp); row.removeEventListener("pointercancel",onCancel);
     try{ row.releasePointerCapture(pid); }catch(_){}
-    if(mode==="drag"){ dragging=false; row.classList.remove("dragging"); row.style.touchAction=""; }
+    if(mode==="drag"){ dragging=false; row.classList.remove("dragging"); row.style.touchAction=""; try{ Cloud.applyPending(); }catch(_){} }   // ドラッグ中に届いたクラウド更新を反映（S4）
     swiping=false;
   }
   row.addEventListener("pointermove",onMove); row.addEventListener("pointerup",onUp); row.addEventListener("pointercancel",onCancel);
@@ -986,18 +1073,27 @@ function toggleDone(i){ const t=state.tasks[i]; if(!t) return;
     if(t.repeat){ recordCompletion(t); rescheduleRecurring(t); toast("🔁 次回 "+t.due+" に繰り越しました"); }
     else { t.done=true; recordCompletion(t); }
     try{ checkMilestones(); }catch(e){}
-  } else { t.done=false; }
+  } else { t.done=false; try{ revertCompletion(t); }catch(e){} }   // 取消は void 化（C11）
   save(); render(); }
 
 // ---- edit sheet ----
 function syncModalLock(){ try{ document.body.classList.toggle("modal-open", !!document.querySelector(".ov.show")); }catch(e){} }
-function openEdit(i){ editIndex=i; buildEditSheet(); el("editOv").classList.add("show"); syncModalLock(); }
-function closeEdit(){ editIndex=-1; el("editOv").classList.remove("show"); syncModalLock(); }
+let editOrigText="";   // 編集シートを開いた時点の本文（改名の墓標用・S2）
+function openEdit(i){ editIndex=i; try{ editOrigText=String(state.tasks[i].text||""); }catch(e){ editOrigText=""; } buildEditSheet(); el("editOv").classList.add("show"); syncModalLock(); }
+function closeEdit(){ let changed=false; try{ changed=commitRename(); }catch(e){} editIndex=-1; editOrigText=""; el("editOv").classList.remove("show"); syncModalLock(); if(changed) save(); try{ Cloud.applyPending(); }catch(e){} }
+function commitRename(){
+  // 本文が変わっていたら旧本文を“削除扱い”で墓標に（ウィジェット Commit-Rename-Tombstone と対称＝他端末で旧名が復活して二重にならない）。新本文の墓標は解除
+  const t=state.tasks[editIndex]; if(!t||!editOrigText) return false;
+  const nt=String(t.text||""); if(!nt || nt===editOrigText) return false;
+  if(!state.tasks.some(x=>x!==t && x.text===editOrigText)) adoptTomb(editOrigText, new Date().toISOString());
+  clearTomb(nt); t.addedAt=new Date().toISOString();   // 改名後の本文は“今追加した”扱い（相手側の古い墓標に消されない）
+  editOrigText=nt; return true;
+}
 function buildEditSheet(){
   const t=state.tasks[editIndex]; if(!t){ closeEdit(); return; }
   const s=el("editSheet"); s.innerHTML="";
   s.appendChild(h2("タスクを編集"));
-  const tx=textarea(t.text,"タスク名"); tx.oninput=()=>{ t.text=tx.value; }; tx.onblur=()=>{ save(); }; s.appendChild(tx);
+  const tx=textarea(t.text,"タスク名"); tx.oninput=()=>{ t.text=tx.value; }; tx.onblur=()=>{ try{ commitRename(); }catch(e){} save(); }; s.appendChild(tx);
   s.appendChild(label("備考"));
   const nb=textarea(t.note,"補足メモ"); nb.style.minHeight="44px"; nb.oninput=()=>{ t.note=nb.value; }; nb.onblur=()=>{ save(); }; s.appendChild(nb);
   s.appendChild(label("分類"));
@@ -1063,14 +1159,17 @@ function buildEditSheet(){
   act.appendChild(linkBtn("↓ 下へ",()=>{ moveTask(editIndex,1); }));
   act.appendChild(linkBtn("📄 複製",()=>{ duplicate(editIndex); }));
   if(getSetting("templates")) act.appendChild(linkBtn("🧩 ﾃﾝﾌﾟﾚ化",()=>{ saveTemplateFromTask(t); }));
-  act.appendChild(linkBtn("🗑 削除",()=>{ if(confirm("このタスクを削除しますか？")){ state.tasks.splice(editIndex,1); save(); closeEdit(); render(); } },"danger"));
+  act.appendChild(linkBtn("🗑 削除",()=>{ if(confirm("このタスクを削除しますか？")){ state.tasks.splice(editIndex,1);
+      try{ const at=new Date().toISOString(); adoptTomb(t.text, at); if(editOrigText && editOrigText!==t.text && !state.tasks.some(x=>x.text===editOrigText)) adoptTomb(editOrigText, at); }catch(e){}   // 墓標＝ウィジェット/他端末にも削除が伝わる（S2）
+      editOrigText=""; save(); closeEdit(); render(); } },"danger"));
   act.appendChild(linkBtn("閉じる",()=>{ commitEdit(); closeEdit(); }));
   s.appendChild(act);
 }
 function commitEdit(){ save(); buildEditSheet(); render(); }
 function moveTask(i,dir){ const j=i+dir; if(j<0||j>=state.tasks.length) return;
   const a=state.tasks; [a[i],a[j]]=[a[j],a[i]]; editIndex=j; save(); buildEditSheet(); render(); }
-function duplicate(i){ const t=state.tasks[i]; const nt=normTask({...t,done:false});
+function duplicate(i){ const t=state.tasks[i]; const now=new Date().toISOString();
+  const nt=normTask({...t,done:false,alarm:"",alarmFired:false,elapsed:0,running:false,runStart:0,addedAt:now,updatedAt:now});   // アラーム・計測状態は引き継がない（S7）
   state.tasks.splice(i+1,0,nt); save(); closeEdit(); render(); toast("📄 複製しました"); }
 function tagEditor(t){
   const box=document.createElement("div");
@@ -1210,12 +1309,12 @@ function importCsv(text){
 
 // ---- JSON ----
 function exportJson(){
-  download("taskweb_"+stamp()+".json", JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,workLog:(state.workLog||[]),appUsage:(state.appUsage||{}),settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones,customCats:state.customCats,tabVisible:state.tabVisible,tabOrder:state.tabOrder},null,2), "application/json");
+  download("taskweb_"+stamp()+".json", JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,workLog:(state.workLog||[]),appUsage:(state.appUsage||{}),settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones,customCats:state.customCats,tabVisible:state.tabVisible,tabOrder:state.tabOrder,deleted:(state.deleted||[]),deletedCats:(state.deletedCats||[])},null,2), "application/json");
   toast("📤 JSONを書き出しました");
 }
 function exportSyncFile(){
   // Windows版と共有する同期ファイル（タスク中心。設定/テンプレ等のUI設定は含めない）
-  const doc={ _source:"web", _updatedAt:new Date().toISOString(), tasks:state.tasks, completions:state.completions, memo:state.memo, attendance:state.attendance, completionLog:state.completionLog, workLog:(state.workLog||[]), appUsage:(state.appUsage||{}), deleted:(state.deleted||[]) };
+  const doc={ _source:"web", _updatedAt:new Date().toISOString(), tasks:state.tasks, completions:state.completions, memo:state.memo, attendance:state.attendance, completionLog:state.completionLog, workLog:(state.workLog||[]), appUsage:(state.appUsage||{}), deleted:(state.deleted||[]), deletedCats:(state.deletedCats||[]), customCats:catsPayload() };
   download("taskweb-sync.json", JSON.stringify(doc,null,2), "application/json");
   toast("📤 taskweb-sync.json を書き出しました（Windows版のフォルダへ）");
 }
@@ -1224,7 +1323,8 @@ function importJson(text, opts){
   let o; try{ o=JSON.parse(text.replace(/^﻿/,"")); }catch(e){ if(!silent) toast("JSONを読めませんでした"); return 0; }
   const arr = Array.isArray(o)? o : (o.tasks||[]);
   // タスク正規化(normTask→catKey)より前に、取り込む手動分類を先にマージ＆再構築＝取り込みタスクのcatが「通常」に消えないように
-  if(o && Array.isArray(o.customCats)){ const keys=new Set((state.customCats||[]).map(c=>c&&c.key)); o.customCats.forEach(c=>{ if(c&&c.key&&!keys.has(c.key)){ state.customCats.push(c); keys.add(c.key); } }); }   // 名前(キー)でマージ
+  if(o && Array.isArray(o.deletedCats)){ try{ adoptDeadCats(o.deletedCats); }catch(e){} }   // 相手の分類削除を先に反映（和集合＋該当分類をローカルからも削除・C10）
+  if(o && Array.isArray(o.customCats)){ if(!Array.isArray(state.customCats)) state.customCats=[]; mergeCustomCats(state.customCats, o.customCats, state.deletedCats); }   // key でマージ（color:'#rrggbb' / rgb:[r,g,b] 両受け・S3）。墓標にあるキーは追加しない（C10）
   if(o && o.tabVisible && typeof o.tabVisible==="object"){ for(const k in o.tabVisible){ if(!(k in state.tabVisible)) state.tabVisible[k]=!!o.tabVisible[k]; } }
   if(o && Array.isArray(o.tabOrder) && !(state.tabOrder||[]).length){ state.tabOrder=o.tabOrder.map(String); }   // 並び順はローカル未設定なら取り込む
   try{ rebuildCats(); }catch(e){}
@@ -1245,9 +1345,13 @@ function importJson(text, opts){
     }
     if(removedAny){ try{ pendingUndo=null; }catch(e){} }   // 消したタスクの「取り消し」を無効化（誤復活防止）
   }
-  const exist=new Set(state.tasks.map(t=>t.text)); let n=0;
+  const exist=new Set(state.tasks.map(t=>t.text)); let n=0, u=0;
   for(const raw of arr){
-    const t=normTask(raw); if(!t.text||exist.has(t.text)) continue;
+    const t=normTask(raw); if(!t.text) continue;
+    if(exist.has(t.text)){   // 本文一致の既存タスク：同期経路なら updatedAt が新しい側の同期対象フィールドを採用（S1）。編集中の行には適用しない
+      if(isSync){ let idx=-1; for(let j=0;j<state.tasks.length;j++){ if(j!==editIndex && state.tasks[j].text===t.text){ idx=j; break; } }   // 本文一致のうち編集中でない最初の1件だけ（C8）
+        if(idx>=0 && mergeTaskFields(state.tasks[idx], t)) u++; }
+      continue; }
     if(isSync && t.done) continue;                        // 同期経由の完了済みは新規行にしない（「完了を消す」後の復活防止）
     if(isSync){ const d=findTomb(t.text);
       if(d){ const ta=Date.parse(t.addedAt||"");
@@ -1271,6 +1375,7 @@ function importJson(text, opts){
       }
     } }
   if(o && Array.isArray(o.completionLog)) state.completionLog=mergeLog(state.completionLog, o.completionLog);
+  if(o && (Array.isArray(o.completionLog) || (o.completions&&typeof o.completions==="object"))){ try{ recountRecentCompletions(); }catch(e){} }   // 今日〜6日前は非void行の件数（C11'）
   if(o && Array.isArray(o.workLog)) state.workLog=mergeWorkLog(state.workLog, o.workLog);   // 在席ログは同期対象（※activityLogのマージは足さない＝他端末の操作ログ混入防止）
   if(o && o.appUsage && typeof o.appUsage==="object") mergeAppUsage(state.appUsage, o.appUsage);
   if(o && o.settings && typeof o.settings==="object"){ for(const k in o.settings){ if(!(k in state.settings)) state.settings[k]=o.settings[k]; } }
@@ -1278,7 +1383,7 @@ function importJson(text, opts){
   if(o && Array.isArray(o.milestones)) state.milestones=Array.from(new Set(state.milestones.concat(o.milestones)));
   if(o && typeof o.activeTemplate==="string" && o.activeTemplate && (state.templates||[]).some(t=>t.name===o.activeTemplate)) state.activeTemplate=o.activeTemplate;
   el("memo").value=state.memo; save(); applySettings(); try{ checkMilestones(); }catch(e){} render();
-  if(!silent || n>0) toast("📥 "+n+" 件を取り込みました");
+  if(!silent || n>0 || u>0) toast("📥 "+n+" 件を取り込みました"+(u>0?"（"+u+" 件を更新）":""));
   return n;
 }
 function stamp(){ const d=new Date(); return d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+"_"+pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds()); }
@@ -1369,9 +1474,18 @@ function newCatKey(){ let k; do{ k="cat_"+Math.random().toString(36).slice(2,10)
 function addCustomCat(label,color){ const lbl=String(label||"").trim(); if(!lbl) return null; const key=newCatKey(); if(!Array.isArray(state.customCats)) state.customCats=[]; state.customCats.push({key:key,label:lbl,color:color||"#8a82b0"}); rebuildCats(); save(); render(); return key; }
 function renameCustomCat(key,label){ const lbl=String(label||"").trim(); if(!lbl) return; (state.customCats||[]).forEach(c=>{ if(c.key===key) c.label=lbl; }); rebuildCats(); save(); render(); }
 function recolorCustomCat(key,color){ if(!color) return; (state.customCats||[]).forEach(c=>{ if(c.key===key) c.color=color; }); rebuildCats(); save(); render(); }
-function deleteCustomCat(key){ state.tasks.forEach(t=>{ if(t.cat===key) t.cat="normal"; }); state.customCats=(state.customCats||[]).filter(c=>c&&c.key!==key); if(state.tabVisible) delete state.tabVisible[key]; state.tabOrder=(state.tabOrder||[]).filter(k=>k!==key); rebuildCats(); save(); render(); }
+function deleteCustomCat(key){ state.tasks.forEach(t=>{ if(t.cat===key) t.cat="normal"; }); state.customCats=(state.customCats||[]).filter(c=>c&&c.key!==key); if(state.tabVisible) delete state.tabVisible[key]; state.tabOrder=(state.tabOrder||[]).filter(k=>k!==key); try{ addDeadCat(key); }catch(e){} rebuildCats(); save(); render(); }   // 墓標を残す＝相手側で復活しない（C10）
 function moveCustomCat(key,dir){ const arr=state.customCats||[]; const i=arr.findIndex(c=>c&&c.key===key); if(i<0) return; const j=i+dir; if(j<0||j>=arr.length) return; const tmp=arr[i]; arr[i]=arr[j]; arr[j]=tmp; rebuildCats(); save(); render(); }
 function catHex(c){ c=String(c||""); return /^#[0-9a-fA-F]{6}$/.test(c)? c : "#8a82b0"; }   // <input type=color> 用（CSS var等は既定色）
+// 手動分類の同期（S3）：ウィジェット内部は rgb=[r,g,b]、同期docでは color:'#rrggbb'。取り込みはどちらも受け付ける
+function rgbToHex(a){ if(!Array.isArray(a)||a.length!==3) return ""; const h=a.map(v=>{ v=Math.max(0,Math.min(255,parseInt(v,10)||0)); return (v<16?"0":"")+v.toString(16); }).join(""); return "#"+h; }
+function normCat(c){ if(!c||!c.key) return null; const col=(typeof c.color==="string"&&/^#[0-9a-fA-F]{6}$/.test(c.color))?c.color:(rgbToHex(c.rgb)||catHex(c.color)); return {key:String(c.key), label:String(c.label||c.key), color:col}; }
+function mergeCustomCats(mine, theirs, tomb){   // key で突合し無いものを追加（既存の label/color は自分のものを維持）。削除墓標(tomb・省略時は state.deletedCats)にあるキーは追加しない（C10）。追加件数を返す
+  if(!Array.isArray(mine)||!Array.isArray(theirs)) return 0; const keys=new Set(mine.map(c=>c&&c.key)); let n=0;
+  const dead=new Set(normDeadCats(tomb===undefined?state.deletedCats:tomb).map(d=>d.key));
+  theirs.forEach(c=>{ const nc=normCat(c); if(!nc||keys.has(nc.key)||dead.has(nc.key)) return; if(BUILTIN_CATS.some(b=>b.key===nc.key)) return; mine.push(nc); keys.add(nc.key); n++; });
+  return n; }
+function catsPayload(){ return (state.customCats||[]).map(normCat).filter(Boolean); }   // 同期doc用 [{key,label,color}]
 function openTabManager(){ buildTabManager(); el("tabmgrOv").classList.add("show"); syncModalLock(); }
 function buildTabManager(){
   const body=el("tabmgrBody"); body.innerHTML="";
@@ -1427,22 +1541,36 @@ function attActiveKey(){ const ok=attOpenKey(); if(ok) return ok;   // 開セッ
   return bk||t; }
 function attActive(){ const k=attActiveKey(); if(!state.attendance) state.attendance={}; return state.attendance[k]||null; }
 function attToday(){ return attActive(); }   // 互換：開いているセッションがあれば日付に関わらずそれを返す（自動リセットしない）
+function hmToMin(s){ const m=/^(\d{1,2}):(\d{2})$/.exec(String(s||"")); return m? (+m[1])*60+(+m[2]) : -1; }
 function minutesBetween(a,b){ const m1=/^(\d{1,2}):(\d{2})$/.exec(String(a||"")), m2=/^(\d{1,2}):(\d{2})$/.exec(String(b||"")); if(!m1||!m2) return 0; let d=(+m2[1]*60+ +m2[2])-(+m1[1]*60+ +m1[2]); if(d<0) d+=1440; return d; }
 function attWorked(a){ if(!(a&&a.in&&a.out)) return null;
   let span; if(a.inDate&&a.outDate){ const i=new Date(a.inDate+"T"+a.in).getTime(), o=new Date(a.outDate+"T"+a.out).getTime(); span=(isFinite(i)&&isFinite(o))?Math.round((o-i)/60000):minutesBetween(a.in,a.out); } else span=minutesBetween(a.in,a.out);   // 日跨ぎ(inDate/outDate)があれば実日時で計算
   const bm=Math.max(0,parseInt(a.breakMin,10)||0); return Math.max(0, span-bm); }
 function attSummary(a){ if(!a) return "未打刻"; const i=a.in||"--:--", o=a.out||"--:--"; let ex=""; const bm=Math.max(0,parseInt(a.breakMin,10)||0); if(a.breakStart) ex+="（休憩中）"; else if(bm>0) ex+="（休憩 "+estLabel(bm)+"）"; const w=attWorked(a); if(w!=null) ex+="（実働 "+estLabel(w)+"）"; return "出勤 "+i+" ／ 退勤 "+o+ex; }
+function attStaleKey(){ const k=attOpenKey(); return (k && k!==todayStr())? k : null; }   // 前日（以前）から開いたままのセッション＝退勤の押し忘れ（A1）
+function attMd(k){ const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(k||"")); return m? (+m[2])+"/"+(+m[3]) : String(k||""); }
 function punchAttendance(){
   if(!state.attendance) state.attendance={};
   const now=hm(new Date()); const today=todayStr();
   const openK=attOpenKey();
   if(openK){ // 出勤中→退勤。開いている全セッションを閉じる（複数端末の同期で複数開いていても孤立させない）。日付が変わっても自動退勤はしない
+    let out=now, outDate=today;
+    const stale=attStaleKey();
+    if(stale){   // 前日分の退勤（A1）：退勤時刻を入力して前日分を確定。空欄なら今の時刻、キャンセルなら何もしない
+      const sa=state.attendance[stale]||{};
+      const inp=window.prompt("前日（"+stale.replace(/-/g,"/")+" "+(sa.in||"--:--")+" 出勤）の退勤が押されていません。退勤時刻（HH:mm）を入力して前日分を確定します。空欄なら今の時刻で退勤します。","");
+      if(inp===null) return;
+      const s=String(inp).trim();
+      if(s){ const m=/^(\d{1,2}):(\d{2})$/.exec(s); if(!m || +m[1]>23 || +m[2]>59){ toast("時刻は HH:mm で入力してください"); return; }
+        out=pad(+m[1])+":"+m[2]; outDate=stale;
+        if(hmToMin(out)>=0 && hmToMin(sa.in)>=0 && hmToMin(out)<hmToMin(sa.in)){ const d=parseDate(stale); if(d) outDate=fmtDate(addDays(d,1)); } }   // 退勤が出勤より前（22:00出勤→01:30退勤）は翌日扱い＝実働が0にならない（C12・在席メモと同じ規則）
+    }
     for(const k in state.attendance){ const a=state.attendance[k]; if(!(a&&a.in&&!a.out)) continue;
-      if(a.breakStart){ a.breakMin=(parseInt(a.breakMin,10)||0)+minutesBetween(a.breakStart,now); delete a.breakStart; }
-      a.out=now; if(k!==today){ a.inDate=k; a.outDate=today; }   // 日跨ぎは日付を残して実働を正しく計算
+      if(a.breakStart){ a.breakMin=(parseInt(a.breakMin,10)||0)+minutesBetween(a.breakStart,out); delete a.breakStart; }
+      a.out=out; if(k!==today || outDate!==today){ a.inDate=k; a.outDate=outDate; }   // 日跨ぎは日付を残して実働を正しく計算
     }
     logActivity("clockout","",0);
-    toast("🕔 退勤 "+now+"　"+attSummary(state.attendance[openK]));
+    toast((stale?"🕔 前日分を退勤 ":"🕔 退勤 ")+out+"　"+attSummary(state.attendance[openK]));
   } else { // 出勤
     const k=today; let a=state.attendance[k]||{};
     if(a.in&&a.out){ toast("本日は退勤済み　"+attSummary(a)); return; }
@@ -1472,9 +1600,9 @@ function applyAttendanceUI(){
   bar.style.display=""; bar.innerHTML="";
   const mk=(txt,fn,cls)=>{ const b=document.createElement("button"); b.className="attbtn"+(cls?" "+cls:""); b.textContent=txt; b.onclick=fn; bar.appendChild(b); return b; };
   if(showAtt){
-    const a=attActive(); const working=!!(a&&a.in&&!a.out);
-    mk(!a?"🕘 出勤":(!a.out?"🕔 退勤":"✅ 退勤済"), punchAttendance);            // 出勤（打刻で退勤に変化）
-    const st=document.createElement("span"); st.className="attstat"; st.textContent=a?attSummary(a):"未打刻"; bar.appendChild(st);  // 打刻時間
+    const a=attActive(); const working=!!(a&&a.in&&!a.out); const stale=attStaleKey();
+    mk(!a?"🕘 出勤":(!a.out?(stale?"⚠ 退勤（前日分）":"🕔 退勤"):"✅ 退勤済"), punchAttendance);            // 出勤（打刻で退勤に変化）。前日から未退勤なら警告表示（A1）
+    const st=document.createElement("span"); st.className="attstat"; st.textContent=(stale?"（"+attMd(stale)+" から継続中）":"")+(a?attSummary(a):"未打刻"); bar.appendChild(st);  // 打刻時間
     if(working) mk(a.breakStart?"▶ 再開":"☕ 休憩", punchBreak);                  // 休憩
     mk("✎ 修正", openAttendanceEdit, "ghost").title="出退勤の時刻を修正";
     mk("⟳ リセット", attReset, "ghost").title="出退勤の記録をリセット";           // リセット
@@ -1504,7 +1632,7 @@ function openAttendanceEdit(){
 
 // ==== 日報 ====
 function buildDailyReport(){
-  const k=todayStr(); const entries=(state.completionLog||[]).filter(e=>e.date===k);
+  const k=todayStr(); const entries=liveLog().filter(e=>e.date===k);
   let sum=0; entries.forEach(e=>sum+=parseInt(e.min,10)||0);
   const lines=["📋 日報 "+k];
   if(getSetting("report_summary")) lines.push("完了 "+entries.length+"件 / 合計 "+(sum>0?estLabel(sum):"0分"));
@@ -1584,7 +1712,7 @@ function getInsights(days){
   const fromK=fmtDate(addDays(today(),-(days-1)));
   const periods={"朝 (6-12)":0,"昼 (12-18)":0,"夕 (18-24)":0,"夜 (0-6)":0}; const cats={now:0,normal:0,any:0};
   let estSum=0,actSum=0,estN=0,over=0,under=0;
-  (state.completionLog||[]).forEach(e=>{ if(!e||String(e.date)<fromK) return;
+  liveLog().forEach(e=>{ if(!e||String(e.date)<fromK) return;
     const m=/^(\d{1,2}):/.exec(String(e.time||"")); if(m){ const h=+m[1]; if(h>=6&&h<12)periods["朝 (6-12)"]++; else if(h>=12&&h<18)periods["昼 (12-18)"]++; else if(h>=18)periods["夕 (18-24)"]++; else periods["夜 (0-6)"]++; }
     const c=String(e.cat||""); if(c in cats) cats[c]++;
     const est=parseInt(e.est,10)||0, act=parseInt(e.min,10)||0; if(est>0){ estN++; estSum+=est; actSum+=act; if(act>est)over++; else under++; } });
@@ -1648,7 +1776,7 @@ function buildCalendar(){
 function openHistory(){ if(!/^\d{4}-\d{2}$/.test(histMonth)) histMonth=curMonth(); buildHistory(); el("histOv").classList.add("show"); syncModalLock(); }
 function historyRows(mk){
   // その月の 完了/出退勤/操作ログ の行テキストを返す
-  const done=(state.completionLog||[]).filter(e=>String(e.date||"").startsWith(mk)).slice().sort((a,b)=>(((a.date||"")+(a.time||""))<((b.date||"")+(b.time||""))?-1:1))
+  const done=liveLog().filter(e=>String(e.date||"").startsWith(mk)).slice().sort((a,b)=>(((a.date||"")+(a.time||""))<((b.date||"")+(b.time||""))?-1:1))
     .map(e=>{ const md=String(e.date||"").slice(5).replace("-","/"); const suf=(parseInt(e.min,10)>0)?("（⏱"+estLabel(e.min)+"）"):""; return md+" "+(e.time||"")+"  ✓ "+e.text+suf; });
   const att=[]; if(state.attendance){ Object.keys(state.attendance).filter(k=>k.startsWith(mk)).sort().forEach(k=>{ const a=state.attendance[k]; if(!a) return; const md=k.slice(5).replace("-","/"); att.push(md+"  "+attSummary(a)); }); }
   const log=(state.activityLog||[]).filter(e=>String(e.ts||"").startsWith(mk)).slice().sort((a,b)=>((a.ts||"")<(b.ts||"")?1:-1)).map(formatActivityLine);
@@ -1773,7 +1901,7 @@ const BK_KEY="taskweb-backups-v1", BK_DATE="taskweb-lastbackup-v1";
 function autoBackup(){
   const k=todayStr(); try{ if(localStorage.getItem(BK_DATE)===k) return; }catch(e){ return; }
   let arr=[]; try{ arr=JSON.parse(localStorage.getItem(BK_KEY)||"[]"); }catch(e){ arr=[]; }
-  const snap={date:k, json:JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,workLog:(state.workLog||[]),appUsage:(state.appUsage||{}),settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones,customCats:state.customCats,tabVisible:state.tabVisible,tabOrder:state.tabOrder})};
+  const snap={date:k, json:JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,workLog:(state.workLog||[]),appUsage:(state.appUsage||{}),settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones,customCats:state.customCats,tabVisible:state.tabVisible,tabOrder:state.tabOrder,deleted:(state.deleted||[]),deletedCats:(state.deletedCats||[])})};
   arr.push(snap); while(arr.length>7) arr.shift();
   // 容量オーバー時は古い世代を捨てて再試行。成否が確定してからBK_DATEを記録（失敗時は翌回再挑戦）
   for(let attempt=0; attempt<7; attempt++){
@@ -1952,6 +2080,7 @@ const Cloud = (function(){
       db.enablePersistence({synchronizeTabs:true}).catch(function(){});
       auth.onAuthStateChanged(function(u){ onAuth(u); });
     }catch(e){ console.error("cloud init",e); available=false; } }
+    try{ localStorage.removeItem("tw_cloud_choice"); }catch(e){}   // 旧版の「どちらを使うか」の記憶は廃止（C13）
     renderCloud();
   }
   function signIn(){
@@ -1968,12 +2097,12 @@ const Cloud = (function(){
       console.error("signIn",e); toast("ログインできませんでした（"+(code||"不明")+"）");
     });
   }
-  function signOutNow(){ if(auth) auth.signOut(); }
+  function signOutNow(){ try{ ["tw_cloud_seen_at","tw_synced_sig","tw_cloud_choice","tw_pending_at"].forEach(k=>localStorage.removeItem(k)); }catch(e){} if(auth) auth.signOut(); }
   function docRef(){ return db.collection(COLL).doc(user.uid); }
-  function hasData(d){ return !!(d && ((d.tasks&&d.tasks.length) || (d.completions&&Object.keys(d.completions).length) || d.memo || (d.attendance&&Object.keys(d.attendance).length) || (d.completionLog&&d.completionLog.length) || (d.workLog&&d.workLog.length) || (d.appUsage&&Object.keys(d.appUsage).length) || (d.settings&&Object.keys(d.settings).length) || (d.templates&&d.templates.length) || d.activeTemplate || (d.milestones&&d.milestones.length) || (d.customCats&&d.customCats.length) || (d.tabVisible&&Object.keys(d.tabVisible).length) || (d.tabOrder&&d.tabOrder.length))); }
+  function hasData(d){ return !!(d && ((d.tasks&&d.tasks.length) || (d.completions&&Object.keys(d.completions).length) || d.memo || (d.attendance&&Object.keys(d.attendance).length) || (d.completionLog&&d.completionLog.length) || (d.workLog&&d.workLog.length) || (d.appUsage&&Object.keys(d.appUsage).length) || (d.settings&&Object.keys(d.settings).length) || (d.templates&&d.templates.length) || d.activeTemplate || (d.milestones&&d.milestones.length) || (d.customCats&&d.customCats.length) || (d.deletedCats&&d.deletedCats.length) || (d.tabVisible&&Object.keys(d.tabVisible).length) || (d.tabOrder&&d.tabOrder.length))); }
   let consumedAtReconcile=false;   // reconcile中に受信箱をマージしたら、reconcile完了後にpush（reconciling中はpushが抑止されるため）
   function onAuth(u){
-    user=u; if(unsub){ unsub(); unsub=null; } renderCloud();
+    user=u; if(unsub){ unsub(); unsub=null; } pendingRemote=null; renderCloud();
     if(!u){ reconciling=false; return; }
     const myGen=++authGen;
     reconciling=true;   // 突き合わせ中はローカル→クラウドのpushを止め、空データでの上書きを防ぐ
@@ -1995,27 +2124,62 @@ const Cloud = (function(){
       return true;
     }catch(e){ console.error("consumeWidget", e); return false; }
   }
+  function contentSig(d){ try{ return JSON.stringify({ tasks:((d&&d.tasks)||[]).map(t=>{ const n=normTask(t); return n.text+"\t"+taskSig(n); }).sort(), memo:String((d&&d.memo)||"") }); }catch(e){ return String(Math.random()); } }
+  // ---- 突き合わせの判定（C13）：「どちらを選んだか」は記憶しない。この端末が最後に適用/送信したクラウド doc の _updatedAt（tw_cloud_seen_at）と、
+  //      最後に同期した時点のローカル署名（tw_synced_sig）を記憶し、真の競合（両方が変わった）ときだけ confirm する
+  function canon(v){ if(Array.isArray(v)) return v.map(canon); if(v&&typeof v==="object"){ const o={}; Object.keys(v).sort().forEach(k=>{ o[k]=canon(v[k]); }); return o; } return v; }
+  function fullSig(d){ try{ d=d||{}; return JSON.stringify(canon({ tasks:(d.tasks||[]).map(t=>{ const n=normTask(t); return n.text+"\t"+taskSig(n); }).sort(), memo:String(d.memo||""),
+      att:(d.attendance&&typeof d.attendance==="object")?d.attendance:{}, comp:(d.completions&&typeof d.completions==="object")?d.completions:{}, set:(d.settings&&typeof d.settings==="object")?d.settings:{},
+      tpl:Array.isArray(d.templates)?d.templates:[], cats:(Array.isArray(d.customCats)?d.customCats:[]).map(normCat).filter(Boolean),
+      wl:(Array.isArray(d.workLog)?d.workLog:[]).length })); }catch(e){ return String(Math.random()); } }   // deleted（墓標）は含めない：load の pruneTombs（14日失効）だけで署名が変わり偽の「両方変更」になるため。削除自体は tasks の差で検出できる（C13'）
+  function pendingAt(){ try{ return localStorage.getItem("tw_pending_at")||""; }catch(e){ return ""; } }   // 自端末の ack 待ち書込みの _updatedAt（C13'）
+  function seenCloudAt(){ try{ return localStorage.getItem("tw_cloud_seen_at")||""; }catch(e){ return ""; } }
+  function syncedSig(){ try{ return localStorage.getItem("tw_synced_sig")||""; }catch(e){ return ""; } }
+  function markSynced(cloudAt, sig){ try{ localStorage.setItem("tw_cloud_seen_at", String(cloudAt||"")); localStorage.setItem("tw_synced_sig", (typeof sig==="string")?sig:fullSig(state)); }catch(e){} }   // sig 省略時は現在のローカル署名（applyRemote/reconcile 用）
   function reconcile(cloud){
     lastDocWidgetAt=String((cloud&&cloud._widgetAt)||"");   // 受信箱の有無を先に記録（この中のpushNowが受信箱を消さないため）
     if(!hasData(cloud)){ pushNow(); if(cloud && consumeWidget(cloud)) consumedAtReconcile=true; return; }   // 本体は空でも受信箱にウィジェットのデータがあり得る
     if(!hasData(state)){ applyRemote(cloud); if(consumeWidget(cloud)) consumedAtReconcile=true; return; }
-    const useCloud=window.confirm("この端末とクラウドの両方にデータがあります。\n\n「OK」＝クラウドのデータを使う\n「キャンセル」＝この端末のデータを使う");
-    if(useCloud) applyRemote(cloud); else pushNow();
+    const cloudAt=String((cloud&&cloud._updatedAt)||""), ls=fullSig(state), cs=fullSig(cloud);
+    const cloudUnchanged = !!cloudAt && (cloudAt===seenCloudAt() || cloudAt===pendingAt());   // 自端末の ack 待ち書込みが再送された doc も「ローカルだけが変わった」扱い（C13'）     // この端末が最後に見た doc のまま → ローカル側だけが変わった（or 同じ）
+    const localUnchanged = !!syncedSig() && syncedSig()===ls;        // 最後の同期以降ローカルは無変更 → クラウド側だけが変わった
+    let useCloud;
+    if(cs===ls){ try{ (Array.isArray(cloud.deleted)?cloud.deleted:[]).filter(tombAlive).forEach(d=>adoptTomb(d.text,d.at)); localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){} markSynced(cloudAt); }   // 同内容→送信も適用も不要。署名外の墓標だけはクラウド側の生存分を取り込む（adoptTomb は同等以上に新しい墓標があれば何もしない・C13'）
+    else if(cloudUnchanged) useCloud=false;
+    else if(localUnchanged) useCloud=true;
+    else useCloud=window.confirm("この端末とクラウドの両方に別々の変更があります。\n\n「OK」＝クラウドのデータを使う\n「キャンセル」＝この端末のデータを使う");   // 真の競合だけ確認（選択は記憶しない）
+    if(useCloud===true) applyRemote(cloud);
+    else if(useCloud===false){ protectIfShrinking(cloud, state, cloud); pushNow(); }   // クラウド側を大きく減らす送信になるなら退避（S5 と対称）
     if(consumeWidget(cloud)) consumedAtReconcile=true;
+  }
+  function protectIfShrinking(before, after, stash){
+    // 適用後のタスク数が適用前の半分未満（かつ適用前が5件以上）なら、上書きされる側を localStorage の tw_protect_<ts> に退避（最新3世代・S5）
+    try{
+      const b=((before&&before.tasks)||[]).length, a=((after&&after.tasks)||[]).length;
+      if(!(b>=5 && a < b/2)) return false;
+      const keys=[]; for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k&&k.indexOf("tw_protect_")===0) keys.push(k); }
+      keys.sort(); while(keys.length>=3){ localStorage.removeItem(keys.shift()); }
+      localStorage.setItem("tw_protect_"+Date.now(), JSON.stringify(stash));
+      try{ toast("⚠ クラウド側でタスクが大きく減っています（退避済み）"); }catch(e){}
+      return true;
+    }catch(e){ return false; }
   }
   function applyRemote(doc){
     if(editIndex>=0) closeEdit();   // 編集中の取りこぼし防止：開いている編集シートは閉じてから反映
     pendingUndo=null;               // リモートが正：保留中の「削除の取り消し」は無効化（重複・誤挿入を防ぐ）
+    protectIfShrinking(state, doc, state);   // タスク激減ガード（S5）：ローカルを退避してから適用
     applyingRemote=true;
     try{
-      if(Array.isArray(doc.customCats)) state.customCats=JSON.parse(JSON.stringify(doc.customCats));   // 手動分類はdoc側にあれば反映
+      if(Array.isArray(doc.customCats)) state.customCats=doc.customCats.map(normCat).filter(Boolean);   // 手動分類はdoc側にあれば反映（color/rgb 両受け）
       if(doc.tabVisible&&typeof doc.tabVisible==="object") state.tabVisible=doc.tabVisible;             // タブ表示も同様
       if(Array.isArray(doc.tabOrder)) state.tabOrder=doc.tabOrder.map(String);                          // タブ並び順も同様
+      try{ if(Array.isArray(doc.deletedCats)) normDeadCats(doc.deletedCats).forEach(d=>addDeadCat(d.key,d.at)); deadCatKeys().forEach(k=>applyDeadCat(k)); }catch(e){}   // 分類の削除墓標は和集合＋該当分類を除去（C10）
       try{ rebuildCats(); }catch(e){}                                                                  // タスク正規化(normTask→catKey)より前に分類を確定＝手動分類catが消えないように
-      state.tasks=(doc.tasks||[]).map(normTask); state.completions=doc.completions||{};
+      state.tasks=(doc.tasks||[]).map(normTask); state.completions=(doc.completions&&typeof doc.completions==="object")?JSON.parse(JSON.stringify(doc.completions)):{};
       state.memo=doc.memo||""; state.hideDone=!!doc.hideDone;
       state.attendance=(doc.attendance&&typeof doc.attendance==="object")?JSON.parse(JSON.stringify(doc.attendance)):{};  // 別オブジェクト化（スナップショット共有を避ける）
-      state.completionLog=mergeLog(state.completionLog, Array.isArray(doc.completionLog)?doc.completionLog:[]);            // 追記ログは和集合でマージ（端末間で取りこぼさない）
+      state.completionLog=mergeLog(state.completionLog, Array.isArray(doc.completionLog)?doc.completionLog:[]);            // 追記ログは (date|time|text) キーで一意にマージ（端末間で取りこぼさない）。同キーは at が新しい方の void 状態（C11'）
+      try{ recountRecentCompletions(); }catch(e){}                                                                          // 今日〜6日前の完了数は非void行の件数（C11'）
       state.workLog=mergeWorkLog(state.workLog, Array.isArray(doc.workLog)?doc.workLog:[]);                                // 在席ログも和集合（置換にすると受信箱消費済み・未push端末で消える）
       mergeAppUsage(state.appUsage, (doc.appUsage&&typeof doc.appUsage==="object")?doc.appUsage:{});
       if(doc.settings&&typeof doc.settings==="object") state.settings=doc.settings;  // 設定はdoc側にあれば反映（last-writer-wins）、無ければローカル維持で誤消去を防ぐ
@@ -2023,7 +2187,9 @@ const Cloud = (function(){
       if(typeof doc.activeTemplate==="string") state.activeTemplate=doc.activeTemplate;
       state.milestones=Array.from(new Set((state.milestones||[]).concat(Array.isArray(doc.milestones)?doc.milestones:[])));  // 解除済みマイルストーンは和集合
       if(Array.isArray(doc.deleted)) state.deleted=doc.deleted.filter(d=>d&&d.text).map(d=>({text:String(d.text),at:String(d.at||"")}));  // 削除の墓標もクラウドに追従
+      try{ rebuildTaskSigs(); }catch(e){}   // 署名キャッシュは刻印なしで再構築（S1）
       try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){}
+      markSynced(doc._updatedAt);           // この doc を適用済み＝以後この端末の変更だけなら次回は確認なしでローカル採用（C13）
     } finally { applyingRemote=false; }
     try{ applySettings(); }catch(e){}
     el("memo").value=state.memo; render();
@@ -2034,23 +2200,41 @@ const Cloud = (function(){
       if(!snap.exists || snap.metadata.hasPendingWrites) return;
       const d=snap.data();
       lastDocWidgetAt=String((d&&d._widgetAt)||"");       // 受信箱の存在は見送り時も記録（pushNowが未消費の受信箱を消さないため）
-      if(pushTimer || editIndex>=0 || dragging) return;   // 未送信の編集 / 編集シート / ドラッグ中はリモート適用を見送る
+      if(editIndex>=0 || dragging){ pendingRemote=d; return; }   // 編集シート / ドラッグ中は破棄せず保留し、閉じた直後に反映（S4。常に最新の文書だけ保持）
+      if(pushTimer) return;                                       // 未送信の編集がある間は見送る（送信後に届く自分の文書で追いつく）
+      pendingRemote=null;                                 // より新しい文書を反映するので保留分は不要
       applyRemote(d);                                     // 先に本文を反映（この後のpushが“見た文書＋α”になる＝他端末の変更を消さない）
       consumeWidget(d);                                   // その上でウィジェットの受信箱をマージ（save→pushで受信箱はクリアされる）
     }, function(e){ console.error("snapshot",e); });
   }
+  let pendingRemote=null;   // 編集シート/ドラッグ中に届いた onSnapshot の文書（S4）
+  function applyPending(){
+    if(!pendingRemote) return;
+    setTimeout(function(){   // closeEdit の呼び出し元（importJson 内の墓標処理など）が終わってから反映
+      if(!pendingRemote || editIndex>=0 || dragging || applyingRemote || reconciling) return;
+      const d=pendingRemote; pendingRemote=null;
+      if(pushTimer){   // 保留中に生じた未送信のローカル変更がある→丸ごと置換すると自分の編集が消えるので、同期docとして追加マージ（墓標・updatedAt ルール込み）
+        try{ importJson(JSON.stringify(Object.assign({}, d, {_source:"web"})), {silent:true}); }catch(e){ console.error("applyPending merge",e); }
+      } else { applyRemote(d); }
+      consumeWidget(d);
+    },0);
+  }
   function onLocalChange(){ if(applyingRemote||reconciling||!user||!db) return; if(pushTimer) clearTimeout(pushTimer); pushTimer=setTimeout(pushNow,800); }
   function pushNow(){ pushTimer=null; if(!user||!db) return;
-    const doc={tasks:state.tasks, completions:state.completions, memo:state.memo, hideDone:state.hideDone, attendance:state.attendance, completionLog:state.completionLog, workLog:(state.workLog||[]), appUsage:(state.appUsage||{}), settings:state.settings, templates:state.templates, activeTemplate:state.activeTemplate, milestones:state.milestones, customCats:state.customCats, tabVisible:state.tabVisible, tabOrder:state.tabOrder, deleted:(state.deleted||[]), _updatedAt:new Date().toISOString()};
+    const doc={tasks:state.tasks, completions:state.completions, memo:state.memo, hideDone:state.hideDone, attendance:state.attendance, completionLog:state.completionLog, workLog:(state.workLog||[]), appUsage:(state.appUsage||{}), settings:state.settings, templates:state.templates, activeTemplate:state.activeTemplate, milestones:state.milestones, customCats:state.customCats, tabVisible:state.tabVisible, tabOrder:state.tabOrder, deleted:(state.deleted||[]), deletedCats:(state.deletedCats||[]), _updatedAt:new Date().toISOString()};
+    const sentSig=fullSig(state);   // 送信時点の署名（ack 待ち中の編集を「同期済み」に混ぜない・C13'）
+    try{ localStorage.setItem("tw_pending_at", doc._updatedAt); }catch(e){}   // ack 未着で終了しても「この _updatedAt の doc は自端末の書込み」と判別できるように
+    const done=function(){ markSynced(doc._updatedAt, sentSig); try{ if(localStorage.getItem("tw_pending_at")===doc._updatedAt) localStorage.removeItem("tw_pending_at"); }catch(e){} };   // 書込み成功＝同期済み（C13'）。失敗時は記録しない→前回値が残り、次回 reconcile で「ローカルだけ変わった」と正しく判定される
     // ウィジェットの受信箱(widgetJson)がまだこの端末で未消費なら、全量set()で消さず update() で本文だけ更新（取り込み前に消える事故を防ぐ）
     const unconsumed = !!(lastDocWidgetAt && lastDocWidgetAt!==seenWidgetAt());
     const op = unconsumed ? docRef().update(doc) : docRef().set(doc);
-    op.catch(function(e){
-      if(unconsumed){ docRef().set(doc).catch(function(e2){ console.error("cloud push",e2); try{ toast("クラウド同期に失敗（次の変更時に再送します）"); }catch(_){} }); return; }   // 文書が無い等はset()で作る
+    op.then(done).catch(function(e){
+      if(unconsumed){ docRef().set(doc).then(done).catch(function(e2){ console.error("cloud push",e2); try{ toast("クラウド同期に失敗（次の変更時に再送します）"); }catch(_){} }); return; }   // 文書が無い等はset()で作る（成功時のみ記録）
       console.error("cloud push",e); try{ toast("クラウド同期に失敗（次の変更時に再送します）"); }catch(_){}
     });
   }
-  return { init, status, signIn, signOut:signOutNow, onLocalChange, pushNow };
+  const _test={ contentSig, fullSig, markSynced, seenCloudAt, syncedSig, protectIfShrinking, reconcile, applyRemote, getPending:()=>pendingRemote, setPending:(d)=>{ pendingRemote=d; }, setPushTimer:(v)=>{ pushTimer=v; }, setAuthStub:(u,d)=>{ user=u; db=d; }, setLastDocWidgetAt:(v)=>{ lastDocWidgetAt=String(v||""); } };   // 検証用（window.__test.cloud）
+  return { init, status, signIn, signOut:signOutNow, onLocalChange, pushNow, applyPending, _test };
 })();
 // ==== ウィジェット自動連携（File System Access API・このPCの taskweb-sync.json と双方向） ====
 const WidgetLink=(function(){
@@ -2116,7 +2300,7 @@ const WidgetLink=(function(){
     if(!handle||status!=="on") return;
     try{
       writing=true;
-      const doc={ _source:"web", _updatedAt:new Date().toISOString(), tasks:state.tasks, completions:state.completions, memo:state.memo, attendance:state.attendance, completionLog:state.completionLog, workLog:(state.workLog||[]), appUsage:(state.appUsage||{}), deleted:(state.deleted||[]) };
+      const doc={ _source:"web", _updatedAt:new Date().toISOString(), tasks:state.tasks, completions:state.completions, memo:state.memo, attendance:state.attendance, completionLog:state.completionLog, workLog:(state.workLog||[]), appUsage:(state.appUsage||{}), deleted:(state.deleted||[]), deletedCats:(state.deletedCats||[]), customCats:catsPayload() };
       const text=JSON.stringify(doc);
       if(text!==lastText){
         const w=await handle.createWritable(); await w.write(text); await w.close();
@@ -2175,6 +2359,7 @@ function renderCloud(){
 }
 
 // ---- init ----
+window.__test={ SYNC_FIELDS, taskSig, mergeTaskFields, mergeCustomCats, normCat, rgbToHex, normTask, attStaleKey, attMd, stampUpdatedAt, rebuildTaskSigs, sigKeyOf, mergeLog, pickLogRow, normLogRow, recordCompletion, revertCompletion, liveLog, recountRecentCompletions, adoptDeadCats, addDeadCat, normDeadCats, hmToMin, cloud:Cloud._test };   // 純関数の公開（ブラウザのコンソールから検証用）
 applyTheme(getTheme()); load(); wire(); applySettings(); render(); Cloud.init();
 try{ WidgetLink.restore(); }catch(e){ console.error("widgetlink restore",e); }
 try{ autoBackup(); }catch(e){}
