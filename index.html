@@ -64,6 +64,7 @@
   .toggle.on{background:var(--green);}
   .toggle .knob{position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%; background:#fff; box-shadow:0 1px 3px #0006; transition:left .15s;}
   .toggle.on .knob{left:25px;}
+  .setsel{flex:none; min-width:84px; padding:6px 8px;}
   /* 設定カード（ジャンル別） */
   .setcard{background:#ffffff0d; border-radius:14px; padding:11px 14px 5px; margin:0 0 12px;}
   html[data-theme="light"] .setcard{background:#1a132209;}
@@ -390,7 +391,7 @@
 <script>
 "use strict";
 const VERSION = "Web版 v1";
-const APP_VERSION = "1.6.0";   // 公開バージョン（publish-exe.ps1 が自動更新）
+const APP_VERSION = "1.7.0";   // 公開バージョン（publish-exe.ps1 が自動更新）
 const LS_KEY = "taskweb-data-v1";
 const BUILTIN_CATS = [
   {key:"now", label:"すぐ", color:"var(--now)"},
@@ -412,7 +413,7 @@ const PRIOS = [
   {key:"", label:"なし"}, {key:"low", label:"低", badge:"🔹低", cls:"pri-low"},
   {key:"mid", label:"中", badge:"🔸中", cls:"pri-mid"}, {key:"high", label:"高", badge:"🔺高", cls:"pri-high"},
 ];
-const DUE_PRESETS = ()=>{ const t=new Date(); const f=(n)=>fmtDate(addDays(t,n));
+const DUE_PRESETS = ()=>{ const t=today(); const f=(n)=>fmtDate(addDays(t,n));   // 今日/明日は営業日基準
   return [{l:"なし",v:""},{l:"今日",v:f(0)},{l:"明日",v:f(1)},{l:"+3日",v:f(3)},{l:"+1週",v:f(7)}]; };
 const EST_PRESETS = [{l:"なし",v:0},{l:"15分",v:15},{l:"30分",v:30},{l:"1時間",v:60},{l:"2時間",v:120},{l:"4時間",v:240},{l:"8時間",v:480}];
 const REPEATS = [{key:"",label:"なし"},{key:"daily",label:"毎日"},{key:"weekday",label:"平日"},{key:"weekly",label:"毎週"}];
@@ -439,7 +440,8 @@ function repeatKey(v){
 function subDone(t){ return (t.subs||[]).filter(s=>s.done).length; }
 
 // ---- state ----
-let state = { tasks:[], completions:{}, memo:"", hideDone:false, attendance:{}, completionLog:[], settings:{}, templates:[], activeTemplate:"", milestones:[], customCats:[], tabVisible:{}, tabOrder:[], deleted:[], deletedCats:[], activityLog:[], workLog:[], appUsage:{} };
+let state = { tasks:[], completions:{}, memo:"", hideDone:false, attendance:{}, completionLog:[], settings:{}, templates:[], activeTemplate:"", milestones:[], customCats:[], tabVisible:{}, tabOrder:[], deleted:[], deletedCats:[], activityLog:[], workLog:[], appUsage:{}, dayStartAt:"" };
+// dayStartAt = 日付の切り替え時刻（settings.daystart）を最後に変えた時刻（UTC ミリ秒 ISO 文字列・''=未設定）。同期 doc のトップレベル dayStart/dayStartAt で LWW（受け取った文字列は無加工で保持）
 // deleted = 削除の墓標 {text, at(ISO)}：ウィジェット/他端末との同期で「削除したタスクの復活」を防ぐ（14日で失効・最大300件）
 // deletedCats = 手動分類の削除墓標 {key, at(ISO)}：相手側の customCats に同キーが残っていても復活させない（60日で整理・最大100件・C10）
 // activityLog = 操作ログ {ts,kind,text,min}：出退勤・タイマーのボタン操作記録（この端末ローカル・同期しない・最大2000件）
@@ -453,7 +455,18 @@ let lastRenderDate = "";   // 日付変化検知（明日→今日のロール�
 function pad(n){ return (n<10?"0":"")+n; }
 function fmtDate(d){ return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); }
 function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
-function today(){ const d=new Date(); d.setHours(0,0,0,0); return d; }
+// ---- 営業日（日付の切り替え時刻・TaskMemo/Web/在席メモの3アプリ共通契約） ----
+// settings.daystart = 0〜12（時）・既定 0。「今日」= 営業日 bizDate(now,h) = (now - h時間) の日付。HH:mm は常に実時刻（日付部分だけずれる）
+// 営業日化しないもの: アラームの実発火・スヌーズ「明日9時」・自動バックアップの1日1回・墓標/整理窓・操作ログ(activityLog)の日付・書き出しファイル名
+function nowDate(){ const o=(typeof window!=="undefined")?window.__nowOverride:null; if(o!=null){ const d=new Date(o); if(isFinite(d.getTime())) return d; } return new Date(); }   // 「今」（テスト用の時刻注入 window.__nowOverride）
+function dayStartHour(){ const v=state.settings?state.settings.daystart:undefined; return (typeof v==="number"&&Number.isInteger(v)&&v>=0&&v<=23)? v : 0; }   // 0〜23 の整数ならそれ、他は 0
+function bizDate(d,h){ const x=new Date(d.getTime()-((parseInt(h,10)||0)*3600000)); x.setHours(0,0,0,0); return x; }   // 純関数：now.AddHours(-h).Date
+function nowStamp(){ return nowDate().toISOString(); }   // dayStartAt 用 yyyy-MM-ddTHH:mm:ss.fffZ（3アプリ同形式）
+function calToday(){ const d=nowDate(); d.setHours(0,0,0,0); return d; }   // 暦日の今日（営業日化しない用途）
+function today(){ return bizDate(nowDate(), dayStartHour()); }   // 営業日の今日（今日/明日タブ・締切判定・完了数・日報・出退勤キー・履歴/月報の既定月・ロールオーバー）
+function bizDateOfTs(ts){ const d=new Date(ts); if(!isFinite(d.getTime())) return String(ts||"").slice(0,10); return fmtDate(bizDate(d, dayStartHour())); }   // ISO 時刻→営業日キー（在席ログのグループ化）
+function bizMinute(time){ const m=hmToMin(time); if(m<0) return -1; return ((m-dayStartHour()*60)+1440)%1440; }   // 日内ソート用：切替時刻起点の分（深夜帯が最後）
+function logCmp(a,b){ const da=String(a&&a.date||""), db=String(b&&b.date||""); if(da!==db) return da<db?-1:1; return bizMinute(a&&a.time)-bizMinute(b&&b.time); }   // 完了ログの表示順（日付→営業日内の分）
 function todayStr(){ return fmtDate(today()); }
 function parseDate(s){ if(!s) return null; const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(s); if(!m) return null;
   const y=+m[1], mo=+m[2], day=+m[3]; if(mo<1||mo>12||day<1||day>31) return null;
@@ -480,7 +493,8 @@ function load(){
     state.deletedCats=normDeadCats(o.deletedCats);
     state.activityLog=Array.isArray(o.activityLog)?o.activityLog.filter(a=>a&&a.ts&&a.kind).map(a=>({ts:String(a.ts),kind:String(a.kind),text:String(a.text||""),min:parseInt(a.min,10)||0})):[];
     state.workLog=Array.isArray(o.workLog)?o.workLog.filter(a=>a&&a.ts&&a.kind).map(a=>({ts:String(a.ts),kind:String(a.kind),text:String(a.text||""),min:parseInt(a.min,10)||0})):[];
-    state.appUsage=(o.appUsage&&typeof o.appUsage==="object")?o.appUsage:{}; }
+    state.appUsage=(o.appUsage&&typeof o.appUsage==="object")?o.appUsage:{};
+    state.dayStartAt=(typeof o.dayStartAt==="string")?o.dayStartAt:""; }
   }catch(e){}
   try{ rebuildCats(); }catch(e){}
   try{ pruneTombs(); }catch(e){}
@@ -677,7 +691,7 @@ function recordCompletion(t){
   const k=todayStr();
   if(!t){ state.completions[k]=(state.completions[k]||0)+1; return; }
   if(!Array.isArray(state.completionLog)) state.completionLog=[];
-  const now=new Date();
+  const now=nowDate();   // date=営業日の今日（k）・time=実時刻
   const row={date:k, time:hm(now), text:String(t.text||""), min:Math.round(elapsedSeconds(t)/60), cat:String(t.cat||""), est:parseInt(t.estimate,10)||0, at:now.toISOString()};
   // C11': 同キー (date|time|text) の行が既にあれば新しい行は追加しない。void なら復活（void=false・at=now）、live なら何もしない（同じ分の同本文2回目は1回として数える＝completions も加算しない）
   const cur=state.completionLog.find(e=>e&&logKey(e)===logKey(row));
@@ -723,7 +737,7 @@ function mergeAppUsage(dst,src){
     for(const p in sv){
       let key=String(p).replace(/[.~*\/\[\]]/g,"_"); if(/^__.*__$/.test(key)) key="p"+key;   // Firestoreフィールド名の禁止文字・予約名を防御（widget側もサニタイズ済みだが旧データ対策）
       const inc=parseInt(sv[p],10)||0; const cur=parseInt(dst[d][key],10)||0; if(inc>cur) dst[d][key]=inc; } } }
-  const lim=fmtDate(addDays(today(),-90));
+  const lim=fmtDate(addDays(calToday(),-90));   // 整理窓は暦日（営業日化しない）
   for(const d in dst){ if(d<lim) delete dst[d]; }
 }
 function formatWorkLine(e){
@@ -755,7 +769,7 @@ function makeMonthlyReport(mk){
   else dks.forEach(d=>{ const v=byDate[d]; const md=d.slice(5).replace("-","/"); const suf=v.min>0?(" / ⏱"+estLabel(v.min)):""; lines.push("・"+md+"　完了"+v.n+"件"+suf); });
   // 在席ログ（widget生成の記録がある月のみ・Windows版の月報と同じ行）
   { let aw=0, awc=0, ok=0, miss=0;
-    (state.workLog||[]).filter(e=>String(e.ts||"").startsWith(mk)).forEach(e=>{ const m=parseInt(e.min,10)||0; if(e.kind==="away"){awc++;aw+=m;} else if(e.kind==="knock_ok"){ok++;} else if(e.kind==="knock_miss"){miss++;} });
+    (state.workLog||[]).filter(e=>bizDateOfTs(e.ts).startsWith(mk)).forEach(e=>{ const m=parseInt(e.min,10)||0; if(e.kind==="away"){awc++;aw+=m;} else if(e.kind==="knock_ok"){ok++;} else if(e.kind==="knock_miss"){miss++;} });
     if(awc+ok+miss>0){ lines.push(""); const kn=(ok+miss>0)?(" / ノック応答 "+ok+"/"+(ok+miss)):""; lines.push("🚪 在席: 離席 "+awc+"回 "+estLabel(aw)+kn); } }
   return lines.join("\n");
 }
@@ -774,7 +788,7 @@ function makeWorkLogText(){
   const lines=["在席ログ（"+fmtDate(new Date())+" 書き出し）",
     "※記録内容: 離席・在席確認ノックへの応答・前面アプリのプロセス名別使用時間（Windows版が記録）。キー入力の内容や画面は記録していません",""];
   const months={};
-  (state.workLog||[]).forEach(e=>{ months[String(e.ts||"").slice(0,7)]=1; });
+  (state.workLog||[]).forEach(e=>{ months[bizDateOfTs(e.ts).slice(0,7)]=1; });   // 営業日の月
   Object.keys(state.appUsage||{}).forEach(d=>{ months[d.slice(0,7)]=1; });
   Object.keys(months).sort().reverse().forEach(mk=>{ makePresenceRows(mk).forEach(l=>lines.push(l)); lines.push(""); });
   if(!Object.keys(months).length) lines.push("（記録はまだありません）");
@@ -1308,13 +1322,18 @@ function importCsv(text){
 }
 
 // ---- JSON ----
+function buildFullDoc(){   // 全データ doc の共通形（JSON書き出し・自動バックアップ・クラウド pushNow）。dayStart/dayStartAt はトップレベル（3アプリ共通の同期契約）
+  return {tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,workLog:(state.workLog||[]),appUsage:(state.appUsage||{}),settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones,customCats:state.customCats,tabVisible:state.tabVisible,tabOrder:state.tabOrder,deleted:(state.deleted||[]),deletedCats:(state.deletedCats||[]),dayStart:dayStartHour(),dayStartAt:String(state.dayStartAt||"")};
+}
+function buildSyncDoc(){   // Windows版と共有する同期 doc の共通形（同期ファイル書き出し・ウィジェット連携の書き戻し）。タスク中心（設定/テンプレ等のUI設定は含めない）。dayStart/dayStartAt はトップレベルで共有（widget は settings.daystart を見ない）
+  return { _source:"web", _updatedAt:new Date().toISOString(), tasks:state.tasks, completions:state.completions, memo:state.memo, attendance:state.attendance, completionLog:state.completionLog, workLog:(state.workLog||[]), appUsage:(state.appUsage||{}), deleted:(state.deleted||[]), deletedCats:(state.deletedCats||[]), customCats:catsPayload(), dayStart:dayStartHour(), dayStartAt:String(state.dayStartAt||"") };
+}
 function exportJson(){
-  download("taskweb_"+stamp()+".json", JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,workLog:(state.workLog||[]),appUsage:(state.appUsage||{}),settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones,customCats:state.customCats,tabVisible:state.tabVisible,tabOrder:state.tabOrder,deleted:(state.deleted||[]),deletedCats:(state.deletedCats||[])},null,2), "application/json");
+  download("taskweb_"+stamp()+".json", JSON.stringify(buildFullDoc(),null,2), "application/json");
   toast("📤 JSONを書き出しました");
 }
 function exportSyncFile(){
-  // Windows版と共有する同期ファイル（タスク中心。設定/テンプレ等のUI設定は含めない）
-  const doc={ _source:"web", _updatedAt:new Date().toISOString(), tasks:state.tasks, completions:state.completions, memo:state.memo, attendance:state.attendance, completionLog:state.completionLog, workLog:(state.workLog||[]), appUsage:(state.appUsage||{}), deleted:(state.deleted||[]), deletedCats:(state.deletedCats||[]), customCats:catsPayload() };
+  const doc=buildSyncDoc();   // Windows版と共有する同期ファイル（タスク中心・dayStart/dayStartAt 込み）
   download("taskweb-sync.json", JSON.stringify(doc,null,2), "application/json");
   toast("📤 taskweb-sync.json を書き出しました（Windows版のフォルダへ）");
 }
@@ -1378,7 +1397,8 @@ function importJson(text, opts){
   if(o && (Array.isArray(o.completionLog) || (o.completions&&typeof o.completions==="object"))){ try{ recountRecentCompletions(); }catch(e){} }   // 今日〜6日前は非void行の件数（C11'）
   if(o && Array.isArray(o.workLog)) state.workLog=mergeWorkLog(state.workLog, o.workLog);   // 在席ログは同期対象（※activityLogのマージは足さない＝他端末の操作ログ混入防止）
   if(o && o.appUsage && typeof o.appUsage==="object") mergeAppUsage(state.appUsage, o.appUsage);
-  if(o && o.settings && typeof o.settings==="object"){ for(const k in o.settings){ if(!(k in state.settings)) state.settings[k]=o.settings[k]; } }
+  if(o && o.settings && typeof o.settings==="object"){ for(const k in o.settings){ if(k==="daystart") continue; if(!(k in state.settings)) state.settings[k]=o.settings[k]; } }   // daystart は和集合に混ぜない（下の LWW だけで動かす）
+  if(o){ try{ adoptDayStart(o.dayStart, o.dayStartAt); }catch(e){} }   // 日付の切り替え時刻：同期 doc／バックアップを問わずトップレベル dayStart/dayStartAt を LWW で採用（和集合の後＝勝たせる）
   if(o && Array.isArray(o.templates)){ const names=new Set(state.templates.map(t=>t.name)); o.templates.forEach(tpl=>{ if(tpl&&tpl.name&&!names.has(tpl.name)){ state.templates.push(tpl); names.add(tpl.name); } }); }
   if(o && Array.isArray(o.milestones)) state.milestones=Array.from(new Set(state.milestones.concat(o.milestones)));
   if(o && typeof o.activeTemplate==="string" && o.activeTemplate && (state.templates||[]).some(t=>t.name===o.activeTemplate)) state.activeTemplate=o.activeTemplate;
@@ -1410,6 +1430,7 @@ const SETTING_DEFS = [
   {key:"templates",  label:"🧩 テンプレート",       group:"機能", def:false, desc:"新規タスクの既定値（分類・優先度・タグ・見積）をテンプレ化します。"},
   {key:"autotab",    label:"⏰ 時間帯で自動タブ切替", group:"動作", def:false, desc:"朝は「今日」昼は「すぐ」など時間帯で表示タブを自動で切り替えます。"},
   {key:"celebrate",  label:"🎉 達成のお祝い",       group:"動作", def:false, desc:"連続記録や累計の節目でお祝いを表示します。"},
+  {key:"daystart",   label:"🕛 日付の切り替え時刻",  group:"動作", type:"select", opts:[0,1,2,3,4,5,6,7,8,9,10,11,12], unit:"時", def:0, desc:"「今日」がこの時刻で切り替わります（出退勤・今日タブ・完了数・日報）。深夜営業などで日をまたぐ勤務は 5時 などに。時刻の表示は実時刻のまま。Windows版・在席メモと共有（最後に変えた値が勝ち）。"},
   {key:"f_priority", label:"📍 優先度",   group:"編集欄", def:true, desc:"タスク編集で「優先度」の設定を表示します。"},
   {key:"f_tags",     label:"🏷 タグ",     group:"編集欄", def:true, desc:"タスク編集で「タグ」の設定を表示します。"},
   {key:"f_due",      label:"📅 締め切り",  group:"編集欄", def:true, desc:"タスク編集で「締切（日付）」の設定を表示します。"},
@@ -1425,6 +1446,26 @@ const SETTING_DEFS = [
 ];
 function getSetting(k){ const d=SETTING_DEFS.find(s=>s.key===k); if(state.settings && (k in state.settings)) return !!state.settings[k]; return d?!!d.def:true; }
 function setSetting(k,v){ if(!state.settings) state.settings={}; state.settings[k]=!!v; save(); applySettings(); render(); }
+function getSettingNum(k){ const d=SETTING_DEFS.find(s=>s.key===k); const v=state.settings?state.settings[k]:undefined; if(typeof v==="number"&&Number.isInteger(v)) return v; return (d&&typeof d.def==="number")?d.def:0; }   // 数値設定（select 型）。未設定・不正は def
+function setDayStart(h){   // 日付の切り替え時刻の変更（setSetting は通さない＝bool 化しない）。dayStartAt=now で同期の LWW に勝つ
+  h=parseInt(h,10); if(!(h>=0&&h<=23)) h=0;
+  if(!state.settings) state.settings={};
+  state.settings.daystart=h; state.dayStartAt=nowStamp();
+  lastRenderDate=todayStr();   // 日付ロールオーバーの基準を新しい「今日」に揃える
+  save(); applySettings(); render(); applyAttendanceUI();
+}
+function adoptDayStart(ds, dsAt){
+  // 同期 doc（トップレベル dayStart/dayStartAt）の LWW：相手の dayStartAt が parse でき、かつ（自分が '' または 相手が厳密に新しい）ときだけ採用。等しい・古い・parse 不可・無しは何もしない
+  // 採用時は dayStartAt を受け取った文字列のまま保持（再フォーマットしない＝精度違いで LWW が回り続けない）。採用したら true
+  if(typeof dsAt!=="string"||!dsAt) return false;
+  const ra=Date.parse(dsAt); if(!isFinite(ra)) return false;
+  if(!(typeof ds==="number"&&Number.isInteger(ds)&&ds>=0&&ds<=23)) return false;
+  const la=Date.parse(state.dayStartAt||""); if(isFinite(la)&&ra<=la) return false;
+  if(!state.settings) state.settings={};
+  state.settings.daystart=ds; state.dayStartAt=dsAt;
+  lastRenderDate=todayStr();   // 新しい「今日」に揃える（呼び元が render／applyAttendanceUI を行う）
+  return true;
+}
 function showHideBtn(id,on){ const b=el(id); if(b) b.style.display=on?"":"none"; }
 function applySettings(){
   try{
@@ -1462,6 +1503,13 @@ function buildSettings(){
       const lb=document.createElement("div"); lb.className="setlabel"; lb.textContent=s.label;
       const ds=document.createElement("div"); ds.className="setdesc"; ds.textContent=s.desc;
       txt.appendChild(lb); txt.appendChild(ds);
+      if(s.type==="select"){   // 数値の選択（例：日付の切り替え時刻 0〜12「N時」）
+        const sel=document.createElement("select"); sel.className="setsel"; sel.setAttribute("aria-label", s.label);
+        (s.opts||[]).forEach(o=>{ const op=document.createElement("option"); op.value=String(o); op.textContent=o+(s.unit||""); sel.appendChild(op); });
+        sel.value=String(getSettingNum(s.key));
+        sel.onchange=()=>{ const v=parseInt(sel.value,10); if(s.key==="daystart") setDayStart(v); else { if(!state.settings) state.settings={}; state.settings[s.key]=v; save(); applySettings(); render(); } };
+        row.appendChild(txt); row.appendChild(sel); card.appendChild(row); return;
+      }
       const tg=makeToggle(getSetting(s.key), (v)=>setSetting(s.key,v));
       row.appendChild(txt); row.appendChild(tg); card.appendChild(row);
     });
@@ -1536,8 +1584,11 @@ function buildTabManager(){
 // ==== 出退勤・休憩 ====
 function attOpenKey(){ if(!state.attendance) return null; let best=null; for(const k in state.attendance){ const a=state.attendance[k]; if(a&&a.in&&!a.out){ if(best===null||k>best) best=k; } } return best; }   // 開いている（出勤中・未退勤）セッションの日付キー。日付が変わっても継続
 function attActiveKey(){ const ok=attOpenKey(); if(ok) return ok;   // 開セッション優先（日付跨いでも継続）
-  const t=todayStr(), A=state.attendance||{}; let bk=null;   // 開セッションが無くても「今日退勤した日跨ぎセッション」は前日キーに残る→それを当日の表示キーに（退勤直後に未打刻へ戻る不具合の対策）
-  for(const kk in A){ const a=A[kk]; if(a&&a.out&&a.outDate===t){ if(bk===null||kk>bk) bk=kk; } }
+  const t=todayStr(), A=state.attendance||{}; let bk=null;   // 開セッションが無くても「今日（営業日）退勤した日跨ぎセッション」は前日キーに残る→それを当日の表示キーに（退勤直後に未打刻へ戻る不具合の対策）
+  for(const kk in A){ const a=A[kk]; if(!(a&&a.out)) continue;
+    const od=parseDate(String(a.outDate||kk)), om=hmToMin(a.out); if(!od||om<0) continue;   // 退勤日時＝(outDate ?? キー)+out。parse 不可はスキップ
+    od.setMinutes(om); if(fmtDate(bizDate(od, dayStartHour()))!==t) continue;                 // 退勤の営業日が今日なら当日扱い（daystart=0 なら従来の outDate===今日 と同じ）
+    if(bk===null||kk>bk) bk=kk; }
   return bk||t; }
 function attActive(){ const k=attActiveKey(); if(!state.attendance) state.attendance={}; return state.attendance[k]||null; }
 function attToday(){ return attActive(); }   // 互換：開いているセッションがあれば日付に関わらずそれを返す（自動リセットしない）
@@ -1547,40 +1598,41 @@ function attWorked(a){ if(!(a&&a.in&&a.out)) return null;
   let span; if(a.inDate&&a.outDate){ const i=new Date(a.inDate+"T"+a.in).getTime(), o=new Date(a.outDate+"T"+a.out).getTime(); span=(isFinite(i)&&isFinite(o))?Math.round((o-i)/60000):minutesBetween(a.in,a.out); } else span=minutesBetween(a.in,a.out);   // 日跨ぎ(inDate/outDate)があれば実日時で計算
   const bm=Math.max(0,parseInt(a.breakMin,10)||0); return Math.max(0, span-bm); }
 function attSummary(a){ if(!a) return "未打刻"; const i=a.in||"--:--", o=a.out||"--:--"; let ex=""; const bm=Math.max(0,parseInt(a.breakMin,10)||0); if(a.breakStart) ex+="（休憩中）"; else if(bm>0) ex+="（休憩 "+estLabel(bm)+"）"; const w=attWorked(a); if(w!=null) ex+="（実働 "+estLabel(w)+"）"; return "出勤 "+i+" ／ 退勤 "+o+ex; }
-function attStaleKey(){ const k=attOpenKey(); return (k && k!==todayStr())? k : null; }   // 前日（以前）から開いたままのセッション＝退勤の押し忘れ（A1）
+function attStaleKey(){ const k=attOpenKey(); return (k && k<todayStr())? k : null; }   // 営業日の今日より前だけ「前日分」（切替時刻の変更で今日より後になった開キーは当日扱い）   // 前日（以前）から開いたままのセッション＝退勤の押し忘れ（A1）
 function attMd(k){ const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(k||"")); return m? (+m[2])+"/"+(+m[3]) : String(k||""); }
 function punchAttendance(){
+  // 出退勤の日付規則（TaskMemo/在席メモと同一）：キー＝営業日の今日、inDate/outDate＝暦日（実働計算用）、HH:mm＝実時刻
   if(!state.attendance) state.attendance={};
-  const now=hm(new Date()); const today=todayStr();
+  const nowD=nowDate(); const now=hm(nowD); const today=todayStr(); const cal=fmtDate(nowD);   // today=営業日（キー）・cal=暦日
   const openK=attOpenKey();
   if(openK){ // 出勤中→退勤。開いている全セッションを閉じる（複数端末の同期で複数開いていても孤立させない）。日付が変わっても自動退勤はしない
-    let out=now, outDate=today;
+    let out=now, outDate=cal;
     const stale=attStaleKey();
-    if(stale){   // 前日分の退勤（A1）：退勤時刻を入力して前日分を確定。空欄なら今の時刻、キャンセルなら何もしない
-      const sa=state.attendance[stale]||{};
-      const inp=window.prompt("前日（"+stale.replace(/-/g,"/")+" "+(sa.in||"--:--")+" 出勤）の退勤が押されていません。退勤時刻（HH:mm）を入力して前日分を確定します。空欄なら今の時刻で退勤します。","");
+    if(stale){   // 前日分の退勤（A1・開キー≠営業日の今日）：退勤時刻を入力して前日分を確定。空欄なら今の時刻（outDate=暦日の今日）、キャンセルなら何もしない
+      const sa=state.attendance[stale]||{}; const inD=String(sa.inDate||stale);   // 出勤日＝inDate ?? キー（切替時刻前の深夜出勤はキーと暦日がずれる）
+      const inp=window.prompt("前日（"+inD.replace(/-/g,"/")+" "+(sa.in||"--:--")+" 出勤）の退勤が押されていません。退勤時刻（HH:mm）を入力して前日分を確定します。空欄なら今の時刻で退勤します。","");
       if(inp===null) return;
       const s=String(inp).trim();
       if(s){ const m=/^(\d{1,2}):(\d{2})$/.exec(s); if(!m || +m[1]>23 || +m[2]>59){ toast("時刻は HH:mm で入力してください"); return; }
-        out=pad(+m[1])+":"+m[2]; outDate=stale;
-        if(hmToMin(out)>=0 && hmToMin(sa.in)>=0 && hmToMin(out)<hmToMin(sa.in)){ const d=parseDate(stale); if(d) outDate=fmtDate(addDays(d,1)); } }   // 退勤が出勤より前（22:00出勤→01:30退勤）は翌日扱い＝実働が0にならない（C12・在席メモと同じ規則）
+        out=pad(+m[1])+":"+m[2]; outDate=inD;
+        if(hmToMin(out)>=0 && hmToMin(sa.in)>=0 && hmToMin(out)<hmToMin(sa.in)){ const d=parseDate(inD); if(d) outDate=fmtDate(addDays(d,1)); } }   // 退勤が出勤より前（22:00出勤→01:30退勤）は翌日扱い＝実働が0にならない（C12・widget/在席メモと同じ規則）
     }
     for(const k in state.attendance){ const a=state.attendance[k]; if(!(a&&a.in&&!a.out)) continue;
       if(a.breakStart){ a.breakMin=(parseInt(a.breakMin,10)||0)+minutesBetween(a.breakStart,out); delete a.breakStart; }
-      a.out=out; if(k!==today || outDate!==today){ a.inDate=k; a.outDate=outDate; }   // 日跨ぎは日付を残して実働を正しく計算
+      a.out=out; const inD=String(a.inDate||k); if(inD!==outDate || a.inDate){ a.inDate=inD; a.outDate=outDate; }   // inDate=a.inDate??キー・outDate=暦日。日跨ぎ（or 深夜出勤で inDate あり）は両方残して実働を正しく計算
     }
     logActivity("clockout","",0);
     toast((stale?"🕔 前日分を退勤 ":"🕔 退勤 ")+out+"　"+attSummary(state.attendance[openK]));
-  } else { // 出勤
+  } else { // 出勤：キー＝営業日の今日。暦日≠キー（切替時刻前の深夜出勤）なら inDate＝暦日
     const k=today; let a=state.attendance[k]||{};
     if(a.in&&a.out){ toast("本日は退勤済み　"+attSummary(a)); return; }
-    a.in=now; state.attendance[k]=a; logActivity("clockin","",0); toast("🕘 出勤 "+now);
+    a.in=now; if(cal!==k) a.inDate=cal; state.attendance[k]=a; logActivity("clockin","",0); toast("🕘 出勤 "+now);
   }
   save(); applyAttendanceUI();
 }
 function punchBreak(){
   const k=attOpenKey(); if(!k){ toast("出勤中のみ休憩できます"); return; }
-  const a=state.attendance[k]; const now=hm(new Date());
+  const a=state.attendance[k]; const now=hm(nowDate());
   if(a.breakStart){ const bm=minutesBetween(a.breakStart,now); a.breakMin=(parseInt(a.breakMin,10)||0)+bm; delete a.breakStart; logActivity("breakend","",bm); toast("▶ 再開 "+now); }
   else { a.breakStart=now; logActivity("breakstart","",0); toast("☕ 休憩 "+now); }
   state.attendance[k]=a; save(); applyAttendanceUI();
@@ -1625,6 +1677,8 @@ function openAttendanceEdit(){
   if(!state.attendance) state.attendance={};
   if(!ni&&!no&&!nb){ delete state.attendance[k]; toast("🕘 本日の勤怠を消去"); }
   else { const e={}; if(ni)e.in=ni; if(no)e.out=no; if(nb>0)e.breakMin=nb;
+    if(ni && a.inDate) e.inDate=a.inDate; if(no && a.outDate) e.outDate=a.outDate;   // 日跨ぎ／深夜出勤の日付は保持（捨てると実働が狂う）
+    if(no && e.inDate && !e.outDate){ let od=e.inDate; if(hmToMin(no)>=0 && hmToMin(ni)>=0 && hmToMin(no)<hmToMin(ni)){ const d=parseDate(e.inDate); if(d) od=fmtDate(addDays(d,1)); } e.outDate=od; }   // 修正で深夜出勤の開セッションを閉じるときは outDate を補う（punchAttendance の前日分 HH:mm と同じ規則）
     if(!no && a.breakStart) e.breakStart=a.breakStart;   // 退勤を入れずに修正したときは進行中の休憩を保持（黙って消さない）
     state.attendance[k]=e; toast("🕘 勤怠を更新"); }
   save(); applyAttendanceUI();
@@ -1632,11 +1686,11 @@ function openAttendanceEdit(){
 
 // ==== 日報 ====
 function buildDailyReport(){
-  const k=todayStr(); const entries=liveLog().filter(e=>e.date===k);
+  const k=todayStr(); const entries=liveLog().filter(e=>e.date===k).sort(logCmp);   // 今日＝営業日。日内は切替時刻起点
   let sum=0; entries.forEach(e=>sum+=parseInt(e.min,10)||0);
   const lines=["📋 日報 "+k];
   if(getSetting("report_summary")) lines.push("完了 "+entries.length+"件 / 合計 "+(sum>0?estLabel(sum):"0分"));
-  if(getSetting("report_attendance") && getSetting("attendance")){ const ak=attActiveKey(); const a=(state.attendance&&state.attendance[ak])||null; if(a&&(a.in||a.out)){ const note=(ak!==k)?("（"+ak+" から継続中）"):""; lines.push("🕐 "+attSummary(a)+note); } }
+  if(getSetting("report_attendance") && getSetting("attendance")){ const ak=attActiveKey(); const a=(state.attendance&&state.attendance[ak])||null; if(a&&(a.in||a.out)){ const note=(ak!==k)?("（"+ak+(a.out?" の分）":" から継続中）")):""; lines.push("🕐 "+attSummary(a)+note); } }
   if(getSetting("report_done")){
     lines.push("");
     entries.forEach(e=>{ const suf=(parseInt(e.min,10)>0)?"（⏱"+estLabel(e.min)+"）":""; lines.push("✓ "+e.text+suf); });
@@ -1776,7 +1830,7 @@ function buildCalendar(){
 function openHistory(){ if(!/^\d{4}-\d{2}$/.test(histMonth)) histMonth=curMonth(); buildHistory(); el("histOv").classList.add("show"); syncModalLock(); }
 function historyRows(mk){
   // その月の 完了/出退勤/操作ログ の行テキストを返す
-  const done=liveLog().filter(e=>String(e.date||"").startsWith(mk)).slice().sort((a,b)=>(((a.date||"")+(a.time||""))<((b.date||"")+(b.time||""))?-1:1))
+  const done=liveLog().filter(e=>String(e.date||"").startsWith(mk)).slice().sort(logCmp)   // 日内は切替時刻起点（深夜帯が最後）
     .map(e=>{ const md=String(e.date||"").slice(5).replace("-","/"); const suf=(parseInt(e.min,10)>0)?("（⏱"+estLabel(e.min)+"）"):""; return md+" "+(e.time||"")+"  ✓ "+e.text+suf; });
   const att=[]; if(state.attendance){ Object.keys(state.attendance).filter(k=>k.startsWith(mk)).sort().forEach(k=>{ const a=state.attendance[k]; if(!a) return; const md=k.slice(5).replace("-","/"); att.push(md+"  "+attSummary(a)); }); }
   const log=(state.activityLog||[]).filter(e=>String(e.ts||"").startsWith(mk)).slice().sort((a,b)=>((a.ts||"")<(b.ts||"")?1:-1)).map(formatActivityLine);
@@ -1785,7 +1839,7 @@ function historyRows(mk){
 }
 function presenceDayLine(d){
   // 「離席2回28分・ノック応答5/6」の1行（在席率はWeb側では実働が取りにくい日もあるため離席/ノックのみ。無記録日は空）
-  const evs=(state.workLog||[]).filter(e=>String(e.ts||"").startsWith(d));
+  const evs=(state.workLog||[]).filter(e=>bizDateOfTs(e.ts)===d);   // 営業日でグループ化（activityLog は暦日のまま）
   if(!evs.length) return "";
   let awayMin=0, awayCnt=0, ok=0, miss=0;
   evs.forEach(e=>{ const m=parseInt(e.min,10)||0; if(e.kind==="away"){awayCnt++;awayMin+=m;} else if(e.kind==="knock_ok"){ok++;} else if(e.kind==="knock_miss"){miss++;} });
@@ -1797,7 +1851,7 @@ function presenceDayLine(d){
 function makePresenceRows(mk){
   // 在席タブ: 日ごとの要約＋明細＋アプリ別使用時間（新しい日が上）。widgetが生成したログの閲覧専用
   const days={};
-  (state.workLog||[]).forEach(e=>{ const d=String(e.ts||"").slice(0,10); if(d.startsWith(mk)) days[d]=1; });
+  (state.workLog||[]).forEach(e=>{ const d=bizDateOfTs(e.ts); if(d.startsWith(mk)) days[d]=1; });   // 営業日でグループ化
   Object.keys(state.appUsage||{}).forEach(d=>{ if(d.startsWith(mk)) days[d]=1; });
   const rows=[];
   Object.keys(days).sort().reverse().forEach(d=>{
@@ -1805,7 +1859,7 @@ function makePresenceRows(mk){
     const md=d.slice(5).replace("-","/");
     if(line) rows.push("■ "+md+"　"+line);
     else rows.push("■ "+md);
-    (state.workLog||[]).filter(e=>String(e.ts||"").startsWith(d)).sort((a,b)=>((a.ts||"")<(b.ts||"")?-1:1)).forEach(e=>{
+    (state.workLog||[]).filter(e=>bizDateOfTs(e.ts)===d).sort((a,b)=>((a.ts||"")<(b.ts||"")?-1:1)).forEach(e=>{
       let hmm=""; try{ const t=new Date(e.ts); hmm=pad(t.getHours())+":"+pad(t.getMinutes()); }catch(_){ }
       const m=parseInt(e.min,10)||0;
       const suf=(e.kind==="away"&&m>0)?("（"+estLabel(m)+"）"):(e.kind==="knock_ok"?("（"+m+"秒）"):"");
@@ -1890,7 +1944,7 @@ let snoozeTask=null;
 function showAlarmBanner(t){ snoozeTask=t; const ov=el("alarmBanner"); if(!ov) return; el("alarmText").textContent="⏰ "+(t.text||"タスク"); ov.classList.add("show"); }
 function snooze(mins){
   const t=snoozeTask; if(!t || state.tasks.indexOf(t)<0){ hideAlarmBanner(); return; }   // 削除済み等で対象が無ければ何もしない
-  let d; if(mins==="tomorrow"){ d=addDays(today(),1); d.setHours(9,0,0,0); } else { d=new Date(Date.now()+mins*60000); }
+  let d; if(mins==="tomorrow"){ d=addDays(calToday(),1); d.setHours(9,0,0,0); } else { d=new Date(Date.now()+mins*60000); }   // 「明日9時」は暦日の明日（営業日化しない）
   t.alarm=fmtDate(d)+" "+pad(d.getHours())+":"+pad(d.getMinutes()); t.alarmFired=false; save(); render(); hideAlarmBanner();
   toast("⏰ "+(mins==="tomorrow"?"明日9時":(mins+"分後"))+"に再通知");
 }
@@ -1899,9 +1953,9 @@ function hideAlarmBanner(){ snoozeTask=null; const ov=el("alarmBanner"); if(ov) 
 // ==== 自動バックアップ（端末内に最新7世代） ====
 const BK_KEY="taskweb-backups-v1", BK_DATE="taskweb-lastbackup-v1";
 function autoBackup(){
-  const k=todayStr(); try{ if(localStorage.getItem(BK_DATE)===k) return; }catch(e){ return; }
+  const k=fmtDate(calToday()); try{ if(localStorage.getItem(BK_DATE)===k) return; }catch(e){ return; }   // 暦日で1日1回（営業日化しない）
   let arr=[]; try{ arr=JSON.parse(localStorage.getItem(BK_KEY)||"[]"); }catch(e){ arr=[]; }
-  const snap={date:k, json:JSON.stringify({tasks:state.tasks,completions:state.completions,memo:state.memo,hideDone:state.hideDone,attendance:state.attendance,completionLog:state.completionLog,workLog:(state.workLog||[]),appUsage:(state.appUsage||{}),settings:state.settings,templates:state.templates,activeTemplate:state.activeTemplate,milestones:state.milestones,customCats:state.customCats,tabVisible:state.tabVisible,tabOrder:state.tabOrder,deleted:(state.deleted||[]),deletedCats:(state.deletedCats||[])})};
+  const snap={date:k, json:JSON.stringify(buildFullDoc())};
   arr.push(snap); while(arr.length>7) arr.shift();
   // 容量オーバー時は古い世代を捨てて再試行。成否が確定してからBK_DATEを記録（失敗時は翌回再挑戦）
   for(let attempt=0; attempt<7; attempt++){
@@ -1968,6 +2022,7 @@ const HELP_SECTIONS = [
   { h:"🎨 表示・設定", c:"var(--purple)", items:[
     "テーマ：右上の 🌙／☀️ を押すたびに ダーク⇄ライト が切り替わる",
     "右上の ⚙ で設定画面。ジャンル別カードのスイッチで機能を1つずつオン/オフ（画面上部にバージョン表示）",
+    "⚙設定「🕛 日付の切り替え時刻」（既定 0時）：「今日」が切り替わる時刻。深夜営業など日をまたぐ勤務は 5時 などにすると、出退勤・今日タブ・完了数・日報がその時刻で翌日になる（時刻の表示は実時刻のまま。Windows版・在席メモと共有＝最後に変えた値が勝ち）",
     "共有メニューの「ホーム画面に追加」で、アプリのようにアイコンから開ける（オフラインでも使える）" ]},
   { h:"💾 データの同期・バックアップ", c:"var(--blue)", items:[
     "右上「⇅」→「🔑 Googleでログイン」で、iPadやPCなど複数端末のデータが自動で同期（ログアウトで停止）",
@@ -2099,7 +2154,7 @@ const Cloud = (function(){
   }
   function signOutNow(){ try{ ["tw_cloud_seen_at","tw_synced_sig","tw_cloud_choice","tw_pending_at"].forEach(k=>localStorage.removeItem(k)); }catch(e){} if(auth) auth.signOut(); }
   function docRef(){ return db.collection(COLL).doc(user.uid); }
-  function hasData(d){ return !!(d && ((d.tasks&&d.tasks.length) || (d.completions&&Object.keys(d.completions).length) || d.memo || (d.attendance&&Object.keys(d.attendance).length) || (d.completionLog&&d.completionLog.length) || (d.workLog&&d.workLog.length) || (d.appUsage&&Object.keys(d.appUsage).length) || (d.settings&&Object.keys(d.settings).length) || (d.templates&&d.templates.length) || d.activeTemplate || (d.milestones&&d.milestones.length) || (d.customCats&&d.customCats.length) || (d.deletedCats&&d.deletedCats.length) || (d.tabVisible&&Object.keys(d.tabVisible).length) || (d.tabOrder&&d.tabOrder.length))); }
+  function hasData(d){ return !!(d && ((d.tasks&&d.tasks.length) || (d.completions&&Object.keys(d.completions).length) || d.memo || (d.attendance&&Object.keys(d.attendance).length) || (d.completionLog&&d.completionLog.length) || (d.workLog&&d.workLog.length) || (d.appUsage&&Object.keys(d.appUsage).length) || (d.settings&&Object.keys(d.settings).length) || (d.templates&&d.templates.length) || d.activeTemplate || (d.milestones&&d.milestones.length) || (d.customCats&&d.customCats.length) || (d.deletedCats&&d.deletedCats.length) || (d.tabVisible&&Object.keys(d.tabVisible).length) || (d.tabOrder&&d.tabOrder.length) || d.dayStartAt)); }   // dayStartAt も「データあり」（空 doc に消されない）
   let consumedAtReconcile=false;   // reconcile中に受信箱をマージしたら、reconcile完了後にpush（reconciling中はpushが抑止されるため）
   function onAuth(u){
     user=u; if(unsub){ unsub(); unsub=null; } pendingRemote=null; renderCloud();
@@ -2144,12 +2199,12 @@ const Cloud = (function(){
     const cloudUnchanged = !!cloudAt && (cloudAt===seenCloudAt() || cloudAt===pendingAt());   // 自端末の ack 待ち書込みが再送された doc も「ローカルだけが変わった」扱い（C13'）     // この端末が最後に見た doc のまま → ローカル側だけが変わった（or 同じ）
     const localUnchanged = !!syncedSig() && syncedSig()===ls;        // 最後の同期以降ローカルは無変更 → クラウド側だけが変わった
     let useCloud;
-    if(cs===ls){ try{ (Array.isArray(cloud.deleted)?cloud.deleted:[]).filter(tombAlive).forEach(d=>adoptTomb(d.text,d.at)); localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){} markSynced(cloudAt); }   // 同内容→送信も適用も不要。署名外の墓標だけはクラウド側の生存分を取り込む（adoptTomb は同等以上に新しい墓標があれば何もしない・C13'）
+    if(cs===ls){ try{ (Array.isArray(cloud.deleted)?cloud.deleted:[]).filter(tombAlive).forEach(d=>adoptTomb(d.text,d.at)); if(adoptDayStart(cloud.dayStart, cloud.dayStartAt)){ applySettings(); render(); } localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){} markSynced(cloudAt); }   // 同内容→送信も適用も不要。署名外の墓標だけはクラウド側の生存分を取り込む（adoptTomb は同等以上に新しい墓標があれば何もしない・C13'）
     else if(cloudUnchanged) useCloud=false;
     else if(localUnchanged) useCloud=true;
     else useCloud=window.confirm("この端末とクラウドの両方に別々の変更があります。\n\n「OK」＝クラウドのデータを使う\n「キャンセル」＝この端末のデータを使う");   // 真の競合だけ確認（選択は記憶しない）
     if(useCloud===true) applyRemote(cloud);
-    else if(useCloud===false){ protectIfShrinking(cloud, state, cloud); pushNow(); }   // クラウド側を大きく減らす送信になるなら退避（S5 と対称）
+    else if(useCloud===false){ try{ if(adoptDayStart(cloud.dayStart, cloud.dayStartAt)){ localStorage.setItem(LS_KEY, JSON.stringify(state)); applySettings(); render(); } }catch(e){} protectIfShrinking(cloud, state, cloud); pushNow(); }   // ローカル採用でも日付の切り替え時刻だけは LWW（クラウド側が新しければ採用してから送信）   // クラウド側を大きく減らす送信になるなら退避（S5 と対称）
     if(consumeWidget(cloud)) consumedAtReconcile=true;
   }
   function protectIfShrinking(before, after, stash){
@@ -2182,7 +2237,11 @@ const Cloud = (function(){
       try{ recountRecentCompletions(); }catch(e){}                                                                          // 今日〜6日前の完了数は非void行の件数（C11'）
       state.workLog=mergeWorkLog(state.workLog, Array.isArray(doc.workLog)?doc.workLog:[]);                                // 在席ログも和集合（置換にすると受信箱消費済み・未push端末で消える）
       mergeAppUsage(state.appUsage, (doc.appUsage&&typeof doc.appUsage==="object")?doc.appUsage:{});
-      if(doc.settings&&typeof doc.settings==="object") state.settings=doc.settings;  // 設定はdoc側にあれば反映（last-writer-wins）、無ければローカル維持で誤消去を防ぐ
+      try{ adoptDayStart(doc.dayStart, doc.dayStartAt); }catch(e){}   // 日付の切り替え時刻は settings 丸ごと置換とは別に LWW で勝者を決める（置換後に再代入）
+      const dsH=state.settings?state.settings.daystart:undefined;
+      if(doc.settings&&typeof doc.settings==="object") state.settings=JSON.parse(JSON.stringify(doc.settings));  // 設定はdoc側にあれば反映（last-writer-wins）、無ければローカル維持で誤消去を防ぐ
+      if(!state.settings||typeof state.settings!=="object") state.settings={};
+      if(typeof dsH==="number") state.settings.daystart=dsH; else delete state.settings.daystart;   // daystart は LWW の勝者（採用した相手の値 or 自分の値）。dayStartAt はトップレベルなので置換の影響なし
       if(Array.isArray(doc.templates)) state.templates=JSON.parse(JSON.stringify(doc.templates));
       if(typeof doc.activeTemplate==="string") state.activeTemplate=doc.activeTemplate;
       state.milestones=Array.from(new Set((state.milestones||[]).concat(Array.isArray(doc.milestones)?doc.milestones:[])));  // 解除済みマイルストーンは和集合
@@ -2221,7 +2280,7 @@ const Cloud = (function(){
   }
   function onLocalChange(){ if(applyingRemote||reconciling||!user||!db) return; if(pushTimer) clearTimeout(pushTimer); pushTimer=setTimeout(pushNow,800); }
   function pushNow(){ pushTimer=null; if(!user||!db) return;
-    const doc={tasks:state.tasks, completions:state.completions, memo:state.memo, hideDone:state.hideDone, attendance:state.attendance, completionLog:state.completionLog, workLog:(state.workLog||[]), appUsage:(state.appUsage||{}), settings:state.settings, templates:state.templates, activeTemplate:state.activeTemplate, milestones:state.milestones, customCats:state.customCats, tabVisible:state.tabVisible, tabOrder:state.tabOrder, deleted:(state.deleted||[]), deletedCats:(state.deletedCats||[]), _updatedAt:new Date().toISOString()};
+    const doc=Object.assign(buildFullDoc(), {_updatedAt:new Date().toISOString()});   // dayStart/dayStartAt 込み（buildFullDoc）
     const sentSig=fullSig(state);   // 送信時点の署名（ack 待ち中の編集を「同期済み」に混ぜない・C13'）
     try{ localStorage.setItem("tw_pending_at", doc._updatedAt); }catch(e){}   // ack 未着で終了しても「この _updatedAt の doc は自端末の書込み」と判別できるように
     const done=function(){ markSynced(doc._updatedAt, sentSig); try{ if(localStorage.getItem("tw_pending_at")===doc._updatedAt) localStorage.removeItem("tw_pending_at"); }catch(e){} };   // 書込み成功＝同期済み（C13'）。失敗時は記録しない→前回値が残り、次回 reconcile で「ローカルだけ変わった」と正しく判定される
@@ -2233,7 +2292,7 @@ const Cloud = (function(){
       console.error("cloud push",e); try{ toast("クラウド同期に失敗（次の変更時に再送します）"); }catch(_){}
     });
   }
-  const _test={ contentSig, fullSig, markSynced, seenCloudAt, syncedSig, protectIfShrinking, reconcile, applyRemote, getPending:()=>pendingRemote, setPending:(d)=>{ pendingRemote=d; }, setPushTimer:(v)=>{ pushTimer=v; }, setAuthStub:(u,d)=>{ user=u; db=d; }, setLastDocWidgetAt:(v)=>{ lastDocWidgetAt=String(v||""); } };   // 検証用（window.__test.cloud）
+  const _test={ contentSig, fullSig, hasData, markSynced, seenCloudAt, syncedSig, protectIfShrinking, reconcile, applyRemote, getPending:()=>pendingRemote, setPending:(d)=>{ pendingRemote=d; }, setPushTimer:(v)=>{ pushTimer=v; }, setAuthStub:(u,d)=>{ user=u; db=d; }, setLastDocWidgetAt:(v)=>{ lastDocWidgetAt=String(v||""); } };   // 検証用（window.__test.cloud）
   return { init, status, signIn, signOut:signOutNow, onLocalChange, pushNow, applyPending, _test };
 })();
 // ==== ウィジェット自動連携（File System Access API・このPCの taskweb-sync.json と双方向） ====
@@ -2300,7 +2359,7 @@ const WidgetLink=(function(){
     if(!handle||status!=="on") return;
     try{
       writing=true;
-      const doc={ _source:"web", _updatedAt:new Date().toISOString(), tasks:state.tasks, completions:state.completions, memo:state.memo, attendance:state.attendance, completionLog:state.completionLog, workLog:(state.workLog||[]), appUsage:(state.appUsage||{}), deleted:(state.deleted||[]), deletedCats:(state.deletedCats||[]), customCats:catsPayload() };
+      const doc=buildSyncDoc();   // dayStart/dayStartAt 込み
       const text=JSON.stringify(doc);
       if(text!==lastText){
         const w=await handle.createWritable(); await w.write(text); await w.close();
@@ -2359,16 +2418,21 @@ function renderCloud(){
 }
 
 // ---- init ----
-window.__test={ SYNC_FIELDS, taskSig, mergeTaskFields, mergeCustomCats, normCat, rgbToHex, normTask, attStaleKey, attMd, stampUpdatedAt, rebuildTaskSigs, sigKeyOf, mergeLog, pickLogRow, normLogRow, recordCompletion, revertCompletion, liveLog, recountRecentCompletions, adoptDeadCats, addDeadCat, normDeadCats, hmToMin, cloud:Cloud._test };   // 純関数の公開（ブラウザのコンソールから検証用）
+window.__test={ SYNC_FIELDS, taskSig, mergeTaskFields, mergeCustomCats, normCat, rgbToHex, normTask, attStaleKey, attMd, stampUpdatedAt, rebuildTaskSigs, sigKeyOf, mergeLog, pickLogRow, normLogRow, recordCompletion, revertCompletion, liveLog, recountRecentCompletions, adoptDeadCats, addDeadCat, normDeadCats, hmToMin, cloud:Cloud._test,
+  // 営業日（日付の切り替え時刻）関連：node ハーネス／ブラウザコンソールからの検証用
+  bizDate, dayStartHour, nowDate, nowStamp, calToday, today, todayStr, bizDateOfTs, bizMinute, logCmp, setNow:(d)=>{ window.__nowOverride=(d==null)?null:d; },
+  attActiveKey, attOpenKey, attWorked, punchAttendance, punchBreak, openAttendanceEdit, getSettingNum, setDayStart, adoptDayStart, DUE_PRESETS, curDue, importJson,
+  buildFullDoc, buildSyncDoc, buildDailyReport, makeMonthlyReport, makePresenceRows, presenceDayLine, historyRows, buildSettings, SETTING_DEFS, tickSecond,
+  showAlarmBanner, snooze, getLastRenderDate:()=>lastRenderDate, setFilter:(f)=>{ filter=f; }, getState:()=>state };   // 純関数の公開（ブラウザのコンソールから検証用）
 applyTheme(getTheme()); load(); wire(); applySettings(); render(); Cloud.init();
 try{ WidgetLink.restore(); }catch(e){ console.error("widgetlink restore",e); }
 try{ autoBackup(); }catch(e){}
 try{ checkAutoTab(); }catch(e){}
 setInterval(function(){ try{ checkAutoTab(); }catch(e){} }, 30000);
 // 1秒ごと：アラーム発火チェック＋計測中タスクの表示更新
-setInterval(function(){
+function tickSecond(){
   let fired=false; try{ fired=checkAlarms(); }catch(e){}
-  const ds=todayStr();   // 日付が変わったら再描画（明日→今日のロールオーバー）。編集/ドラッグ中は保留し、描画したときだけ日付を進める＝取りこぼさない
+  const ds=todayStr();   // 日付（営業日）が変わったら再描画（明日→今日のロールオーバー＝切替時刻に発火）。編集/ドラッグ中は保留し、描画したときだけ日付を進める＝取りこぼさない
   if(!lastRenderDate){ lastRenderDate=ds; }
   else if(lastRenderDate!==ds && !dragging && !swiping && editIndex<0){ lastRenderDate=ds; try{ render(); }catch(e){} }
   const anyRunning=state.tasks.some(t=>t.running);
@@ -2376,7 +2440,8 @@ setInterval(function(){
   // 編集シートを開いたまま計測中なら、タイマー表示だけ毎秒更新（シート全体は作り直さない）
   if(editIndex>=0){ const t=state.tasks[editIndex]; const lab=document.getElementById("tmLabel");
     if(t && t.running && lab){ try{ lab.textContent="⏱ 作業時間："+fmtElapsed(elapsedSeconds(t)); }catch(e){} } }
-}, 1000);
+}
+setInterval(tickSecond, 1000);
 // オフライン対応＆ホーム画面アプリ化（http/https のみ。file:// では登録しない）
 if("serviceWorker" in navigator && /^https?:$/.test(location.protocol)){
   window.addEventListener("load",function(){ navigator.serviceWorker.register("sw.js").catch(function(){}); });
