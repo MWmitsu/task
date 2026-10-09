@@ -391,7 +391,7 @@
 <script>
 "use strict";
 const VERSION = "Web版 v1";
-const APP_VERSION = "1.7.0";   // 公開バージョン（publish-exe.ps1 が自動更新）
+const APP_VERSION = "1.8.0";   // 公開バージョン（publish-exe.ps1 が自動更新）
 const LS_KEY = "taskweb-data-v1";
 const BUILTIN_CATS = [
   {key:"now", label:"すぐ", color:"var(--now)"},
@@ -500,6 +500,7 @@ function load(){
   try{ pruneTombs(); }catch(e){}
   try{ pruneDeadCats(); }catch(e){}
   try{ state.completionLog=mergeLog(state.completionLog, []); }catch(e){}   // 同キー重複行を LWW 規則で1行に正規化（C11'）
+  try{ backfillDoneAt(); }catch(e){}   // v1.8.0: 完了済みで doneAt 空のタスクへ completionLog から完了日を補完（署名再構築の前＝updatedAt は刻印しない）
   try{ rebuildTaskSigs(); }catch(e){}   // 署名キャッシュは刻印なしで再構築（S1）
   // 計測中タスクは再開時点から数え直す（アプリを閉じていた時間は実働に含めない）
   state.tasks.forEach(t=>{ if(t.running) t.runStart=Date.now(); });
@@ -562,10 +563,11 @@ function normTask(t){
     runStart:Math.max(0,parseFloat(t.runStart)||0),
     addedAt:String(t.addedAt||""),   // 追加時刻（削除の墓標より新しければ“再追加”とみなして復活を許可）
     updatedAt:String(t.updatedAt||""),   // 同期対象フィールド(SYNC_FIELDS)を最後に変えた時刻(ISO)。''=未刻印（旧版データ）
+    doneAt:String(t.doneAt||""),   // v1.8.0: 完了した営業日 'yyyy-MM-dd'（未完了・旧版/CSV 由来は ''＝doneDate が completionLog へフォールバック）
   };
 }
 // ---- 変更の伝播（S1）：本文一致の既存タスクへ、updatedAt が新しい側の同期対象フィールドを採用 ----
-const SYNC_FIELDS=["done","due","cat","note","priority","estimate","tags","repeat","subs","alarm"];   // alarmFired/elapsed/running/runStart/addedAt は含めない（端末ローカルの計測状態）
+const SYNC_FIELDS=["done","due","cat","note","priority","estimate","tags","repeat","subs","alarm","doneAt"];   // v1.8.0: doneAt を末尾に追加（widget と同順）。alarmFired/elapsed/running/runStart/addedAt は含めない（端末ローカルの計測状態）
 function taskSig(t){ return JSON.stringify(SYNC_FIELDS.map(k=>(t&&t[k]!==undefined)?t[k]:null)); }
 let taskSigs=new Map();   // キー＝本文+"\u0000"+同名内の出現順（リスト順・0始まり）→署名（C8: 同名タスクが複数あっても取り違えない）。保存時に署名が変わったタスクだけ updatedAt を刻印（load/applyRemote 直後は刻印なしで再構築＝更新直後に全件が「今」にならない）
 function sigKeyOf(t){ const arr=state.tasks||[]; const i=arr.indexOf(t); let n=0; for(let j=0;j<i;j++){ const x=arr[j]; if(x&&x.text===t.text) n++; } return String(t.text)+"\u0000"+n; }
@@ -616,7 +618,7 @@ function estLabel(min){ min=parseInt(min,10)||0; if(min<=0) return ""; const h=M
 // ---- add / current defaults ----
 function curCat(){ return CATS.some(c=>c.key===filter)?filter:"normal"; }
 function curDue(){ if(filter==="today") return todayStr(); if(filter==="tomorrow") return fmtDate(addDays(today(),1)); return ""; }
-function newTask(text, applyTpl){ const t={text:text,done:false,due:curDue(),cat:curCat(),note:"",repeat:"",estimate:0,priority:"",tags:[],subs:[],alarm:"",alarmFired:false,elapsed:0,running:false,runStart:0,addedAt:new Date().toISOString(),updatedAt:new Date().toISOString()}; if(applyTpl!==false){ try{ applyTemplate(t); }catch(e){} } return t; }
+function newTask(text, applyTpl){ const t={text:text,done:false,doneAt:"",due:curDue(),cat:curCat(),note:"",repeat:"",estimate:0,priority:"",tags:[],subs:[],alarm:"",alarmFired:false,elapsed:0,running:false,runStart:0,addedAt:new Date().toISOString(),updatedAt:new Date().toISOString()}; if(applyTpl!==false){ try{ applyTemplate(t); }catch(e){} } return t; }
 function addTasks(){
   const raw=el("input").value; if(!raw.trim()) return; let added=0;
   for(const ln of raw.split(/\r\n|\r|\n/)){
@@ -629,12 +631,15 @@ function addTasks(){
   if(added){ el("input").value=""; save(); render(); }
 }
 
+// ---- v1.8.0: 完了日（doneAt）の解決。doneAt があればそれ。'' なら completionLog の本文一致（===・大文字小文字区別）かつ非void の行のうち (date+' '+time) が最大の行の date（配列順に依存しない＝widget Done-Date と同一規則。revertCompletion の「当日・末尾から走査」とは別規則）。無ければ '' ----
+function doneDate(t){ if(t&&t.doneAt) return String(t.doneAt); const tx=String(t&&t.text||""); let best="", bd=""; (state.completionLog||[]).forEach(e=>{ if(!e || e.void || String(e.text||"")!==tx) return; const k=String(e.date||"")+" "+String(e.time||""); if(k>best){ best=k; bd=String(e.date||""); } }); return bd; }   // v1.8.0: doneAt 優先。無ければ completionLog の「同本文・非void行」のうち (date,time) が最大の行の date（配列順に依存しない＝widget Done-Date と同一規則）。無ければ ''
+function backfillDoneAt(){ (state.tasks||[]).forEach(t=>{ if(t && t.done && !t.doneAt){ const d=doneDate(t); if(d) t.doneAt=d; } }); }   // v1.8.0: load/applyRemote の rebuildTaskSigs() 直前に呼ぶ（updatedAt を刻印せず同期の往復を起こさない）。解決できなければ '' のまま
 // ---- filter ----
 function matchFilter(t){
   if(state.hideDone && t.done) return false;
   let ok;
   if(filter==="all") ok = true;
-  else if(filter==="today") ok = dueLEToday(t.due);
+  else if(filter==="today") ok = dueLEToday(t.due) && !(t.done && doneDate(t)<todayStr());   // v1.8.0: 前日以前（不明 '' 含む）に完了したタスクは今日タブに出さない（当日完了は終日表示・取消で戻る・「すべて」では見える）。'' < 'yyyy-mm-dd' は真
   else if(filter==="tomorrow") ok = dueEqTomorrow(t.due);
   else ok = (t.cat===filter && !dueLEToday(t.due) && !dueEqTomorrow(t.due));   // 分類タブ：締切が今日以下/明日のものは日付ビューへ譲る（排他）。完了の表示/非表示は先頭のhideDoneで一元管理（各タブでトグルが効くように!t.doneは付けない）
   if(!ok) return false;
@@ -1028,7 +1033,7 @@ function rescheduleRecurring(t){
   if(t.alarm){ const na=shiftAlarmToDate(t.alarm, next); if(na){ t.alarm=na; t.alarmFired=false; } }
   t.elapsed=0; t.running=false; t.runStart=0;                 // 次の回は作業時間を0から
   if(Array.isArray(t.subs)) t.subs.forEach(s=>{ s.done=false; });  // サブタスクもリセット
-  t.done=false;
+  t.done=false; t.doneAt="";   // v1.8.0: 繰り越し＝未完了に戻るので完了日も消す（widget Reschedule-Recurring と同じ）
 }
 // ---- 作業時間タイマー ----
 function elapsedSeconds(t){ let e=parseFloat(t.elapsed)||0; if(t.running && t.runStart>0) e += (Date.now()-t.runStart)/1000; return e; }
@@ -1085,9 +1090,9 @@ function toggleDone(i){ const t=state.tasks[i]; if(!t) return;
     if(t.running && t.runStart>0){ t.elapsed=(parseFloat(t.elapsed)||0)+(Date.now()-t.runStart)/1000; }  // 計測中なら確定して停止
     t.running=false; t.runStart=0;
     if(t.repeat){ recordCompletion(t); rescheduleRecurring(t); toast("🔁 次回 "+t.due+" に繰り越しました"); }
-    else { t.done=true; recordCompletion(t); }
+    else { t.done=true; t.doneAt=todayStr(); recordCompletion(t); }   // v1.8.0: 完了日＝営業日の今日を刻印
     try{ checkMilestones(); }catch(e){}
-  } else { t.done=false; try{ revertCompletion(t); }catch(e){} }   // 取消は void 化（C11）
+  } else { t.done=false; t.doneAt=""; try{ revertCompletion(t); }catch(e){} }   // 取消は void 化（C11）・doneAt も消す（v1.8.0）
   save(); render(); }
 
 // ---- edit sheet ----
@@ -1183,7 +1188,7 @@ function commitEdit(){ save(); buildEditSheet(); render(); }
 function moveTask(i,dir){ const j=i+dir; if(j<0||j>=state.tasks.length) return;
   const a=state.tasks; [a[i],a[j]]=[a[j],a[i]]; editIndex=j; save(); buildEditSheet(); render(); }
 function duplicate(i){ const t=state.tasks[i]; const now=new Date().toISOString();
-  const nt=normTask({...t,done:false,alarm:"",alarmFired:false,elapsed:0,running:false,runStart:0,addedAt:now,updatedAt:now});   // アラーム・計測状態は引き継がない（S7）
+  const nt=normTask({...t,done:false,doneAt:"",alarm:"",alarmFired:false,elapsed:0,running:false,runStart:0,addedAt:now,updatedAt:now});   // アラーム・計測状態・完了日は引き継がない（S7・v1.8.0）
   state.tasks.splice(i+1,0,nt); save(); closeEdit(); render(); toast("📄 複製しました"); }
 function tagEditor(t){
   const box=document.createElement("div");
@@ -1983,6 +1988,7 @@ const HELP_SECTIONS = [
     "タブを選んで追加すると分類・締切が自動で付く（今日タブ→締切今日、明日タブ→締切明日、すぐタブ→分類すぐ など）",
     "「すべて」タブは常に表示（消せない）。ここで追加した分類は「通常」になる",
     "締切が今日以下・明日のタスクは分類タブには出ない（今日/明日タブにまとまり重複しない）",
+    "前日以前に完了したタスクは「今日」タブに出ない（「すべて」タブで見られる・当日中は表示）",
     "🗂 <b>タブ・分類の管理</b>（⚙設定内）：各タブの表示オン/オフ・色・並び順（↑↓）・削除・追加をまとめて設定",
     "「＋分類を追加」で自分専用の分類（例：仕事・家事）を作れてタブにもなる。名前・色は変更、🗑で削除（中のタスクは「通常」へ）",
     "分類の変更はタスクをタップ→編集パネルの「分類」から選ぶ",
@@ -2183,7 +2189,11 @@ const Cloud = (function(){
   // ---- 突き合わせの判定（C13）：「どちらを選んだか」は記憶しない。この端末が最後に適用/送信したクラウド doc の _updatedAt（tw_cloud_seen_at）と、
   //      最後に同期した時点のローカル署名（tw_synced_sig）を記憶し、真の競合（両方が変わった）ときだけ confirm する
   function canon(v){ if(Array.isArray(v)) return v.map(canon); if(v&&typeof v==="object"){ const o={}; Object.keys(v).sort().forEach(k=>{ o[k]=canon(v[k]); }); return o; } return v; }
-  function fullSig(d){ try{ d=d||{}; return JSON.stringify(canon({ tasks:(d.tasks||[]).map(t=>{ const n=normTask(t); return n.text+"\t"+taskSig(n); }).sort(), memo:String(d.memo||""),
+  const LEGACY_SYNC_FIELDS=SYNC_FIELDS.filter(k=>k!=="doneAt");   // v1.7.x までの署名形（旧版が残した tw_synced_sig との比較用・v1.8.0）
+  function taskSigWith(fields,t){ return JSON.stringify(fields.map(k=>(t&&t[k]!==undefined)?t[k]:null)); }   // taskSig と同じ計算（項目リストだけ差し替え）
+  function fullSig(d){ return fullSigWith(d, SYNC_FIELDS); }
+  function legacyFullSig(d){ return fullSigWith(d, LEGACY_SYNC_FIELDS); }   // v1.8.0: アップグレード直後の reconcile で旧形署名とも比較（SYNC_FIELDS の形が変わっただけで偽の「両方変更」confirm を出さない）
+  function fullSigWith(d,fields){ try{ d=d||{}; return JSON.stringify(canon({ tasks:(d.tasks||[]).map(t=>{ const n=normTask(t); return n.text+"\t"+taskSigWith(fields,n); }).sort(), memo:String(d.memo||""),
       att:(d.attendance&&typeof d.attendance==="object")?d.attendance:{}, comp:(d.completions&&typeof d.completions==="object")?d.completions:{}, set:(d.settings&&typeof d.settings==="object")?d.settings:{},
       tpl:Array.isArray(d.templates)?d.templates:[], cats:(Array.isArray(d.customCats)?d.customCats:[]).map(normCat).filter(Boolean),
       wl:(Array.isArray(d.workLog)?d.workLog:[]).length })); }catch(e){ return String(Math.random()); } }   // deleted（墓標）は含めない：load の pruneTombs（14日失効）だけで署名が変わり偽の「両方変更」になるため。削除自体は tasks の差で検出できる（C13'）
@@ -2197,7 +2207,7 @@ const Cloud = (function(){
     if(!hasData(state)){ applyRemote(cloud); if(consumeWidget(cloud)) consumedAtReconcile=true; return; }
     const cloudAt=String((cloud&&cloud._updatedAt)||""), ls=fullSig(state), cs=fullSig(cloud);
     const cloudUnchanged = !!cloudAt && (cloudAt===seenCloudAt() || cloudAt===pendingAt());   // 自端末の ack 待ち書込みが再送された doc も「ローカルだけが変わった」扱い（C13'）     // この端末が最後に見た doc のまま → ローカル側だけが変わった（or 同じ）
-    const localUnchanged = !!syncedSig() && syncedSig()===ls;        // 最後の同期以降ローカルは無変更 → クラウド側だけが変わった
+    const ss=syncedSig(); const localUnchanged = !!ss && (ss===ls || ss===legacyFullSig(state));        // 最後の同期以降ローカルは無変更 → クラウド側だけが変わった（v1.8.0: 旧版(doneAt 無し10項目)が残した tw_synced_sig とも比較＝アップグレード直後の偽競合を防ぐ。markSynced 後は新形に置き換わる）
     let useCloud;
     if(cs===ls){ try{ (Array.isArray(cloud.deleted)?cloud.deleted:[]).filter(tombAlive).forEach(d=>adoptTomb(d.text,d.at)); if(adoptDayStart(cloud.dayStart, cloud.dayStartAt)){ applySettings(); render(); } localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){} markSynced(cloudAt); }   // 同内容→送信も適用も不要。署名外の墓標だけはクラウド側の生存分を取り込む（adoptTomb は同等以上に新しい墓標があれば何もしない・C13'）
     else if(cloudUnchanged) useCloud=false;
@@ -2246,6 +2256,7 @@ const Cloud = (function(){
       if(typeof doc.activeTemplate==="string") state.activeTemplate=doc.activeTemplate;
       state.milestones=Array.from(new Set((state.milestones||[]).concat(Array.isArray(doc.milestones)?doc.milestones:[])));  // 解除済みマイルストーンは和集合
       if(Array.isArray(doc.deleted)) state.deleted=doc.deleted.filter(d=>d&&d.text).map(d=>({text:String(d.text),at:String(d.at||"")}));  // 削除の墓標もクラウドに追従
+      try{ backfillDoneAt(); }catch(e){}   // v1.8.0: 旧版 doc の done タスク（doneAt 無し）へ同 doc からマージ済みの completionLog で完了日を補完（署名再構築の前）
       try{ rebuildTaskSigs(); }catch(e){}   // 署名キャッシュは刻印なしで再構築（S1）
       try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){}
       markSynced(doc._updatedAt);           // この doc を適用済み＝以後この端末の変更だけなら次回は確認なしでローカル採用（C13）
@@ -2292,7 +2303,7 @@ const Cloud = (function(){
       console.error("cloud push",e); try{ toast("クラウド同期に失敗（次の変更時に再送します）"); }catch(_){}
     });
   }
-  const _test={ contentSig, fullSig, hasData, markSynced, seenCloudAt, syncedSig, protectIfShrinking, reconcile, applyRemote, getPending:()=>pendingRemote, setPending:(d)=>{ pendingRemote=d; }, setPushTimer:(v)=>{ pushTimer=v; }, setAuthStub:(u,d)=>{ user=u; db=d; }, setLastDocWidgetAt:(v)=>{ lastDocWidgetAt=String(v||""); } };   // 検証用（window.__test.cloud）
+  const _test={ contentSig, fullSig, legacyFullSig, hasData, markSynced, seenCloudAt, syncedSig, protectIfShrinking, reconcile, applyRemote, getPending:()=>pendingRemote, setPending:(d)=>{ pendingRemote=d; }, setPushTimer:(v)=>{ pushTimer=v; }, setAuthStub:(u,d)=>{ user=u; db=d; }, setLastDocWidgetAt:(v)=>{ lastDocWidgetAt=String(v||""); } };   // 検証用（window.__test.cloud）
   return { init, status, signIn, signOut:signOutNow, onLocalChange, pushNow, applyPending, _test };
 })();
 // ==== ウィジェット自動連携（File System Access API・このPCの taskweb-sync.json と双方向） ====
@@ -2423,7 +2434,7 @@ window.__test={ SYNC_FIELDS, taskSig, mergeTaskFields, mergeCustomCats, normCat,
   bizDate, dayStartHour, nowDate, nowStamp, calToday, today, todayStr, bizDateOfTs, bizMinute, logCmp, setNow:(d)=>{ window.__nowOverride=(d==null)?null:d; },
   attActiveKey, attOpenKey, attWorked, punchAttendance, punchBreak, openAttendanceEdit, getSettingNum, setDayStart, adoptDayStart, DUE_PRESETS, curDue, importJson,
   buildFullDoc, buildSyncDoc, buildDailyReport, makeMonthlyReport, makePresenceRows, presenceDayLine, historyRows, buildSettings, SETTING_DEFS, tickSecond,
-  showAlarmBanner, snooze, getLastRenderDate:()=>lastRenderDate, setFilter:(f)=>{ filter=f; }, getState:()=>state };   // 純関数の公開（ブラウザのコンソールから検証用）
+  showAlarmBanner, snooze, doneDate, matchFilter, toggleDone, backfillDoneAt, getLastRenderDate:()=>lastRenderDate, setFilter:(f)=>{ filter=f; }, getState:()=>state };   // 純関数の公開（ブラウザのコンソールから検証用）
 applyTheme(getTheme()); load(); wire(); applySettings(); render(); Cloud.init();
 try{ WidgetLink.restore(); }catch(e){ console.error("widgetlink restore",e); }
 try{ autoBackup(); }catch(e){}
