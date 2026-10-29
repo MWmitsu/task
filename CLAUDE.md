@@ -1,0 +1,29 @@
+# やること（task-web）
+
+> 個人共通の方針は `~/.claude/CLAUDE.md` を参照。
+
+## 何か
+どのブラウザ／iPad／スマホでも使えるタスク管理Web版。Windows常駐ウィジェット（`desktop-task-widget`）と同じ感覚で使え、データ同期も可能。素のJS・PWA。公開: https://mwmitsu.github.io/task/
+
+## 技術・動かし方
+- 素のJS（npm／ビルドなし）。PWA（`manifest.webmanifest` + `sw.js` + icons）。保存: `localStorage` ＋ 任意のクラウド同期。
+- ローカル確認: `./serve.ps1`（http://localhost:8190/ ）。index.html 単体でも動くが、ホーム画面アプリ化／オフラインには manifest・sw.js・icons が必要。
+- 公開: commit → `git push origin main` → GitHub Pages（origin: github.com/MWmitsu/task）。
+
+## 連携（重要）
+- Windowsの `desktop-task-widget`（PowerShell製）と `taskweb-sync.json` 経由でデータ連携する。**同期のデータ形式を変えるとウィジェット側が壊れる**ため、変更時は両者の整合を必ず確認する。
+- 同期docのフィールド: tasks/completions/memo/attendance/completionLog/deleted に加え、v1.5.0から **workLog/appUsage（在席ログ。v1.6.0からは別アプリ「在席メモ」が生成し taskweb-sync.json に追記→TaskMemo は中継のみ・Webは閲覧のみ）**、v1.6.0から **`tasks[].updatedAt`（ISO。同期対象フィールド done/due/cat/note/priority/estimate/tags/repeat/subs/alarm/doneAt を変えた保存時に刻印。本文一致の既存タスクは相手の updatedAt が新しいときだけ上記をコピー・自分の updatedAt=相手の値。alarmFired/elapsed/running/runStart/addedAt は対象外）**、v1.8.0から **`tasks[].doneAt`（完了した営業日 'yyyy-MM-dd'、未完了は ''。SYNC_FIELDS の末尾（widget と同順）＝taskSig/mergeTaskFields の対象。toggleDone で done=true にする時 todayStr() を刻印、取消・rescheduleRecurring（繰り越し）で ''。CSV 取り込みの done 行は ''（完了日不明）。load()/applyRemote() で done かつ doneAt 空のタスクへ `backfillDoneAt()`＝completionLog の本文一致（===）・(date,time) が最大の非void行（配列順に依存しない。widget Done-Date と同一規則）の date をバックフィル（`rebuildTaskSigs()` の直前＝updatedAt は刻印しない＝同期ping-pongを起こさない）。表示側 `doneDate(t)` は doneAt→同フォールバック→''。「今日」タブだけ `dueLEToday(due) && !(done && doneDate(t) < todayStr())`＝完了済みで完了日が今日より前（不明 '' 含む）は除外（すべて/明日/分類タブ・hideDone・完了数・ストリーク・completionLog は変更なし。当日完了は終日表示・取消で戻る）。旧版相手は doneAt 無し→normTask で ''＝同 payload の completionLog から解決）** と **`customCats: [{key,label,color:'#rrggbb'}]`（キーで突合し無いものを追加。取り込みは color 16進／rgb 配列どちらも可）**、**`deletedCats: [{key,at}]`（手動分類の削除墓標。和集合で取り込み→該当キーの分類を削除しタスクは normal へ。墓標にあるキーは customCats の追加マージで復活させない。60日で整理・最大100件。標準キー now/normal/any は対象外）**、**`completionLog[]` は `{date,time,text,min,cat,est,void(bool),at(ISO)}`（C11'：(date|time|text) キーで一意。`at`＝最後に状態が変わった時刻。完了は同キー行があれば追加せず void なら復活 at=now・live なら何もしない（completions も加算しない）。取消は行を消さず void=true・at=now。マージは同キーを1行に畳み、両方 at あり→at が新しい方の void 状態（同時刻は void 優先）／片方だけ at→そちら／両方無し（旧版）→void 優先。load 時にもローカルを同規則で正規化。completions[date] は今日〜6日前の7日間＝非void行の件数（0なら除去）／古い日は max。表示・集計は void 行を数えない。旧版相手には at 無し行として扱われる）**。Webが本体docを書く全箇所（pushNow/writeBack/exportSyncFile/exportJson/autoBackup）に必ず含めること（漏らすとクラウドから消える）。署名キャッシュ（taskSigs）のキーは **本文+"\u0000"+同名内の出現順**（widget の Stamp-Task-Updates/Adopt-Task-Fields と同一規則）。相手の done=true を取り込むとき計測中なら elapsed に畳んで停止（alarmFired は触らない）。前日分退勤の入力が出勤より前なら outDate＝日付キー+1日（widget Close-Stale-Attendance／在席メモと同一）。
+- クラウド突き合わせ（Cloud.reconcile）は `tw_cloud_seen_at`（最後に適用/送信した doc の _updatedAt）と `tw_synced_sig`（最後に同期した時点の fullSig）で判定し、両方が変わったときだけ confirm（選択は記憶しない。旧 `tw_cloud_choice` は廃止・init で削除・signOut で3キー削除）。applyRemote 後に markSynced。pushNow は **書込み成功後（.then）** にだけ markSynced（送信直前に取った `sentSig=fullSig(state)` と doc._updatedAt で記録。失敗時は記録しない＝未送信のローカル変更が次回 reconcile でクラウドに上書きされない。unconsumed 時のフォールバック set() も成功時のみ・C13'）。v1.8.0: SYNC_FIELDS に doneAt を加えたため reconcile は旧版が残した `tw_synced_sig` を `legacyFullSig`（doneAt 無しの10項目で計算）とも比較する（アップグレード直後の偽競合を防ぐ。markSynced 後は新形に置き換わる）。fullSig は `deleted`（墓標）を含めない（pruneTombs の14日失効だけで偽の「両方変更」にならないため。削除は tasks の差で検出）。activityLog は逆に端末ローカル＝docに入れない。
+- **日付の切り替え時刻（v1.7.0・3アプリ共通契約）**: 設定 `settings.daystart` = int 0〜12（既定 0）。`dayStartHour()` は「0〜23 の整数ならそれ、他は 0」。`state.dayStartAt` = 最後に変えた時刻の文字列（`nowStamp()`＝`new Date().toISOString()` の UTC ミリ秒形式。**受け取った文字列は無加工で保持**＝再フォーマットしない）。同期 doc（pushNow/writeBack/exportSyncFile/exportJson/autoBackup＝`buildFullDoc()`/`buildSyncDoc()`）の**トップレベル** `dayStart`/`dayStartAt` で共有し、取り込み（importJson・applyRemote・reconcile）は `adoptDayStart()` の **LWW**（相手の dayStartAt が parse でき、かつ自分が '' または相手が厳密に新しいときだけ採用。等しい・古い・parse 不可・無しは何もしない。settings 和集合には daystart を混ぜない。applyRemote は settings 丸ごと置換の後に勝者を再代入。hasData は dayStartAt も「データあり」に数える。reconcile のローカル採用でも dayStart だけは LWW で採用してから pushNow）。widget は Web doc の settings.daystart を見ない（トップレベルのみ）。**`today()` は営業日**（`bizDate(nowDate(), dayStartHour())` = now−h時間 の日付）で、今日/明日タブ・締切判定・完了数・completionLog の date・日報・月報/履歴の既定月・出退勤キー・日付ロールオーバー（`tickSecond`）がこれに従う。HH:mm は常に実時刻（`nowDate()`）。**営業日化しない**: アラーム実発火・スヌーズ「明日9時」（`calToday()`）・自動バックアップの1日1回・墓標/appUsage の整理窓・操作ログ(activityLog)の日付・書き出しファイル名。在席ログ **workLog は `bizDateOfTs(ts)` で営業日にグループ化**（activityLog は暦日）。完了ログの日内表示順は `bizMinute(time)`（切替時刻起点・深夜帯が最後）。
+- **出退勤の日付規則（widget/在席メモと同一）**: 出勤→キー＝営業日の今日、暦日≠キーなら `inDate`＝暦日。退勤→`inDate = a.inDate ?? キー`、`outDate`＝暦日の今日、inDate≠outDate または a.inDate があれば両方保存。前日分（開キー≠営業日の今日）→確認文の出勤日は `a.inDate ?? キー`、HH:mm 入力なら outDate＝out<in（分換算）なら inDate+1日 else inDate、空欄なら out＝今・outDate＝暦日の今日。`attActiveKey` の「今日退勤した日跨ぎセッション」判定は `bizDate((a.outDate ?? キー)+out) == 営業日の今日`（parse 不可はスキップ）。`openAttendanceEdit` は inDate/outDate を保持。
+- テスト: node ハーネス（scratchpad `harness-bd.js`。index.html の最初のインライン script を最小 DOM スタブで実行）。時刻注入は `window.__nowOverride`（`__test.setNow(d)`）。`window.__test` に `bizDate/dayStartHour/today/attActiveKey/punchAttendance/getSettingNum/adoptDayStart/buildFullDoc/buildSyncDoc/tickSecond` 等を公開。
+- 純関数 `taskSig`/`mergeTaskFields`/`mergeCustomCats`/`normCat` 等は `window.__test` に公開（ブラウザのコンソールから検証用。`window.__test.cloud` に reconcile/applyRemote/hasData 等）。
+
+## 守ってほしいこと（品質）
+- 保存データ／同期フォーマットの変更は、desktop-task-widget側との互換を確認してから行う。
+- `sw.js` 変更時は `const CACHE = "taskweb-vNN"` の版番号を上げる。
+- 変更後はブラウザで動作＋コンソールエラー0を確認して報告する。
+
+## Don't
+- npm／ビルド／外部CDN導入禁止。個人データを想定外に外部送信しない。指示外の大規模改修はまず提案。
+- クラウド突き合わせの補助キー `tw_pending_at`: pushNow が送信直前に doc._updatedAt を記録し、書込み成功で削除。reconcile ではクラウドの _updatedAt が `tw_cloud_seen_at` か `tw_pending_at` に一致すれば「ローカルだけ変わった」扱い（ack 未着のまま終了→再送された自端末の doc を競合と誤認しない）。signOut で4キー削除。
